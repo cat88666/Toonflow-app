@@ -8,7 +8,7 @@ const vendor = {
     { key: "baseUrl", label: "请求地址", type: "url", required: true, placeholder: "http://43.154.247.11/v1" },
     { key: "apiKey", label: "API 密钥", type: "password", required: true, placeholder: "sk-upstream-***" },
   ],
-  inputValues: { baseUrl: "http://43.154.247.11/v1", apiKey: "sk-upstream-abd73c50454b7b2a87cba7cd2dd8ee16df172a6931b18c8c" },
+  inputValues: { baseUrl: "http://43.154.247.11/v1", apiKey: "sk-upstream-***" },
   models: [
     { name: "Elysium Chat", modelName: "elysium-chat", type: "text", think: false },
     { name: "Elysium Image", modelName: "elysium-image", type: "image", mode: ["text"] },
