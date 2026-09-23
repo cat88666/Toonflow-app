@@ -5,10 +5,10 @@ const vendor = {
   name: "Elysium",
   description: "Elysium 模型网关（OpenAI 风格接口）：文本、图片、视频。",
   inputs: [
-    { key: "baseUrl", label: "请求地址", type: "url", required: true, placeholder: "http://127.0.0.1:18090/v1" },
-    { key: "apiKey", label: "API 密钥", type: "password", required: true, placeholder: "sk-upstream-abd73c50454b7b2a87cba7cd2dd8ee16df172a6931b18c8c" },
+    { key: "baseUrl", label: "请求地址", type: "url", required: true, placeholder: "http://43.154.247.11/v1" },
+    { key: "apiKey", label: "API 密钥", type: "password", required: true, placeholder: "sk-upstream-***" },
   ],
-  inputValues: { baseUrl: "http://127.0.0.1:18090/v1", apiKey: "sk-upstream-abd73c50454b7b2a87cba7cd2dd8ee16df172a6931b18c8c" },
+  inputValues: { baseUrl: "http://43.154.247.11/v1", apiKey: "sk-upstream-abd73c50454b7b2a87cba7cd2dd8ee16df172a6931b18c8c" },
   models: [
     { name: "Elysium Chat", modelName: "elysium-chat", type: "text", think: false },
     { name: "Elysium Image", modelName: "elysium-image", type: "image", mode: ["text"] },
