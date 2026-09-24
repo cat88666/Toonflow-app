@@ -1,4 +1,3 @@
-import * as ONNX_WEB from "onnxruntime-web";
 import { pipeline, env as transformersEnv, FeatureExtractionPipeline } from "@huggingface/transformers";
 import path from "path";
 import fs from "fs";
@@ -9,10 +8,21 @@ import db from "@/utils/db";
 // const modelOnnxFile = ["all-MiniLM-L6-v2", "onnx", "model_fp16.onnx"]; // 模型文件路径
 // const modelDtype = "fp16" as const; // 量化类型：fp32
 let extractor: FeatureExtractionPipeline | null = null;
+let initPromise: Promise<void> | null = null;
 
 export async function initEmbedding(): Promise<void> {
   if (extractor) return;
 
+  if (!initPromise) {
+    initPromise = loadEmbedding().catch((error) => {
+      initPromise = null;
+      throw error;
+    });
+  }
+  await initPromise;
+}
+
+async function loadEmbedding(): Promise<void> {
   const modelConfigData = await db("o_setting").whereIn("key", ["modelOnnxFile", "modelDtype"]);
   const modelObj: Record<string, string> = {};
   Object.entries(modelConfigData).forEach(([key, value]) => {
@@ -45,6 +55,8 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 export async function disposeEmbedding(): Promise<void> {
+  if (initPromise) await initPromise;
   await extractor?.dispose?.();
   extractor = null;
+  initPromise = null;
 }

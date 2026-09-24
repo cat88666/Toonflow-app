@@ -1,6 +1,5 @@
 import u from "@/utils";
 import { v4 as uuidv4 } from "uuid";
-import { getEmbedding, cosineSimilarity } from "./embedding";
 import type { memories as MemoryRow } from "@/types/database";
 import { tool, jsonSchema } from "ai";
 import { z } from "zod";
@@ -13,6 +12,7 @@ const DEFAULTS: {
   summaryLimit: number;
   ragLimit: number;
   deepRetrieveSummaryLimit: number;
+  embeddingEnabled: number;
 } = {
   messagesPerSummary: 3, // 每累积多少条message触发一次summary生成
   summaryMaxLength: 500, // summary最大字符长度
@@ -20,17 +20,30 @@ const DEFAULTS: {
   summaryLimit: 10, // get()返回的summary条数
   ragLimit: 3, // get()向量相似搜索返回的message条数
   deepRetrieveSummaryLimit: 5, // deepRetrieve()向量召回summary的条数
+  embeddingEnabled: 0, // 是否启用本地 ONNX 向量检索
 };
 
 // ── 向量搜索辅助 ──
 function vectorSearch(rows: MemoryRow[], queryEmbedding: number[], limit: number) {
   return rows
     .map((row) => {
-      const emb: number[] = JSON.parse(row.embedding ?? "[]");
-      return { ...row, similarity: cosineSimilarity(queryEmbedding, emb) };
+      try {
+        const embedding: number[] = JSON.parse(row.embedding ?? "[]");
+        if (embedding.length !== queryEmbedding.length) return null;
+        const similarity = queryEmbedding.reduce((dot, value, index) => dot + value * embedding[index], 0);
+        return { ...row, similarity };
+      } catch {
+        return null;
+      }
     })
+    .filter((row): row is MemoryRow & { similarity: number } => row !== null)
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, limit);
+}
+
+async function getEmbedding(text: string): Promise<number[]> {
+  const embedding = await import("./embedding");
+  return embedding.getEmbedding(text);
 }
 
 class Memory {
@@ -84,9 +97,12 @@ class Memory {
   }
 
   async add(role: string = "user", content: string, options?: { name?: string; createTime?: number }) {
-    const { messagesPerSummary } = await this.getConfigData({ messagesPerSummary: DEFAULTS.messagesPerSummary });
+    const { messagesPerSummary, embeddingEnabled } = await this.getConfigData({
+      messagesPerSummary: DEFAULTS.messagesPerSummary,
+      embeddingEnabled: DEFAULTS.embeddingEnabled,
+    });
     const id = uuidv4();
-    const embedding = await getEmbedding(content);
+    const embedding = Number(embeddingEnabled) === 1 ? await getEmbedding(content) : null;
     const isolationKey = this.isolationKey;
 
     await u.db("memories").insert({
@@ -96,7 +112,7 @@ class Memory {
       role,
       name: options?.name,
       content,
-      embedding: JSON.stringify(embedding),
+      embedding: embedding ? JSON.stringify(embedding) : null,
       relatedMessageIds: null,
       summarized: 0,
       createTime: options?.createTime ?? Date.now(),
@@ -111,7 +127,7 @@ class Memory {
       const batchContents = batch.map((m) => m.content);
 
       const summaryContent = await this.generateSummary(batchContents);
-      const summaryEmbedding = await getEmbedding(summaryContent);
+      const summaryEmbedding = Number(embeddingEnabled) === 1 ? await getEmbedding(summaryContent) : null;
       const summaryId = uuidv4();
 
       await u.db("memories").insert({
@@ -119,7 +135,7 @@ class Memory {
         isolationKey,
         type: "summary",
         content: summaryContent,
-        embedding: JSON.stringify(summaryEmbedding),
+        embedding: summaryEmbedding ? JSON.stringify(summaryEmbedding) : null,
         relatedMessageIds: JSON.stringify(batchIds),
         summarized: 0,
         createTime: Date.now(),
@@ -131,10 +147,11 @@ class Memory {
   }
 
   async get(text: string) {
-    const { shortTermLimit, summaryLimit, ragLimit } = await this.getConfigData({
+    const { shortTermLimit, summaryLimit, ragLimit, embeddingEnabled } = await this.getConfigData({
       shortTermLimit: DEFAULTS.shortTermLimit,
       summaryLimit: DEFAULTS.summaryLimit,
       ragLimit: DEFAULTS.ragLimit,
+      embeddingEnabled: DEFAULTS.embeddingEnabled,
     });
 
     const isolationKey = this.isolationKey;
@@ -150,10 +167,12 @@ class Memory {
     const summaries = await u.db("memories").where({ isolationKey, type: "summary" }).orderBy("createTime", "desc").limit(Number(summaryLimit));
     summaries.reverse();
 
-    // rag: 向量搜索所有 messages
-    const queryEmbedding = await getEmbedding(text);
-    const allMessages = await u.db("memories").where({ isolationKey, type: "message" });
-    const ragResults = vectorSearch(allMessages, queryEmbedding, Number(ragLimit));
+    let ragResults: ReturnType<typeof vectorSearch> = [];
+    if (Number(embeddingEnabled) === 1) {
+      const queryEmbedding = await getEmbedding(text);
+      const allMessages = await u.db("memories").where({ isolationKey, type: "message" }).whereNotNull("embedding");
+      ragResults = vectorSearch(allMessages, queryEmbedding, Number(ragLimit));
+    }
 
     return {
       shortTerm: shortTerm.map((m: any) => ({ id: m.id, role: m.role, name: m.name, content: m.content, createTime: m.createTime })),
@@ -168,13 +187,17 @@ class Memory {
   }
 
   async deepRetrieve(keyword: string) {
-    const { deepRetrieveSummaryLimit } = await this.getConfigData({ deepRetrieveSummaryLimit: DEFAULTS.deepRetrieveSummaryLimit });
+    const { deepRetrieveSummaryLimit, embeddingEnabled } = await this.getConfigData({
+      deepRetrieveSummaryLimit: DEFAULTS.deepRetrieveSummaryLimit,
+      embeddingEnabled: DEFAULTS.embeddingEnabled,
+    });
 
     const isolationKey = this.isolationKey;
-    // 步骤1: 向量搜索 summary
-    const queryEmbedding = await getEmbedding(keyword);
-    const allSummaries = await u.db("memories").where({ isolationKey, type: "summary" });
-    const topSummaries = vectorSearch(allSummaries, queryEmbedding, Number(deepRetrieveSummaryLimit));
+    const allSummaries = await u.db("memories").where({ isolationKey, type: "summary" }).orderBy("createTime", "desc");
+    const topSummaries =
+      Number(embeddingEnabled) === 1
+        ? vectorSearch(allSummaries, await getEmbedding(keyword), Number(deepRetrieveSummaryLimit))
+        : allSummaries.slice(0, Number(deepRetrieveSummaryLimit));
 
     if (topSummaries.length === 0) return [];
 

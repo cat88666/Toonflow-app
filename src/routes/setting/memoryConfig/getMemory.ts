@@ -13,12 +13,13 @@ export default router.get("/", async (req, res) => {
       "summaryLimit",
       "ragLimit",
       "deepRetrieveSummaryLimit",
+      "embeddingEnabled",
       "modelOnnxFile",
       "modelDtype",
     ]);
 
   if (!settingData) return res.status(400).send(error(`获取记忆配置失败`));
-  const memoryObj: Record<string, number | string | string[]> = {};
+  const memoryObj: Record<string, number | string | string[]> = { embeddingEnabled: 0 };
 
   settingData.forEach((i) => {
     if (i.key && i.value) {

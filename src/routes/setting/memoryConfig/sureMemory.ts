@@ -15,12 +15,22 @@ export default router.post(
     summaryLimit: z.number(),
     ragLimit: z.number(),
     deepRetrieveSummaryLimit: z.number(),
+    embeddingEnabled: z.number().int().min(0).max(1).optional(),
     modelOnnxFile: z.array(z.string()),
     modelDtype: z.string(),
   }),
   async (req, res) => {
-    const { messagesPerSummary, shortTermLimit, summaryMaxLength, summaryLimit, ragLimit, deepRetrieveSummaryLimit, modelOnnxFile, modelDtype } =
-      req.body;
+    const {
+      messagesPerSummary,
+      shortTermLimit,
+      summaryMaxLength,
+      summaryLimit,
+      ragLimit,
+      deepRetrieveSummaryLimit,
+      embeddingEnabled,
+      modelOnnxFile,
+      modelDtype,
+    } = req.body;
 
     const upsert = async (key: string, value: string) => {
       const exists = await u.db("o_setting").where("key", key).first();
@@ -37,6 +47,7 @@ export default router.post(
     await upsert("summaryLimit", summaryLimit);
     await upsert("ragLimit", ragLimit);
     await upsert("deepRetrieveSummaryLimit", deepRetrieveSummaryLimit);
+    if (embeddingEnabled !== undefined) await upsert("embeddingEnabled", embeddingEnabled);
     await upsert("modelOnnxFile", JSON.stringify(modelOnnxFile));
     await upsert("modelDtype", modelDtype);
 

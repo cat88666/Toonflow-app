@@ -16,6 +16,14 @@ import type {
 
 type ContentType = AIMessageContent["type"];
 
+// 流式 chunk 合并发送间隔：减少 socket 消息数与前端重渲染次数
+const STREAM_FLUSH_MS = 50;
+// 有未发送 chunk 的内容流；消息状态变更前需先发送，保证事件顺序
+const pendingStreams = new Set<ContentStream<any>>();
+function flushPending(socket: Socket) {
+  for (const stream of pendingStreams) if (stream.socket === socket) stream.flush();
+}
+
 class ResTool {
   public socket: Socket;
   public data: Record<string, any>;
@@ -44,6 +52,7 @@ class ResTool {
 
   // 发送错误消息
   sendError(messageId: string, error: string) {
+    flushPending(this.socket);
     this.socket.emit("message:update", {
       id: messageId,
       status: "error" as ChatMessageStatus,
@@ -53,6 +62,7 @@ class ResTool {
 
   // 发送完成状态
   sendComplete(messageId: string) {
+    flushPending(this.socket);
     this.socket.emit("message:update", {
       id: messageId,
       status: "complete" as ChatMessageStatus,
@@ -94,6 +104,7 @@ class MessageBuilder {
 
   // 更新消息状态
   updateStatus(status: ChatMessageStatus) {
+    flushPending(this.socket);
     this.socket.emit("message:update", {
       id: this.messageId,
       status,
@@ -273,6 +284,7 @@ class MessageBuilder {
 
   // 完成消息
   complete() {
+    flushPending(this.socket);
     this.socket.emit("message:update", {
       id: this.messageId,
       status: "complete" as ChatMessageStatus,
@@ -281,6 +293,7 @@ class MessageBuilder {
 
   // 停止消息
   stop() {
+    flushPending(this.socket);
     this.socket.emit("message:update", {
       id: this.messageId,
       status: "stop" as ChatMessageStatus,
@@ -289,6 +302,7 @@ class MessageBuilder {
 
   // 错误
   error(errorMsg?: string) {
+    flushPending(this.socket);
     this.socket.emit("message:update", {
       id: this.messageId,
       status: "error" as ChatMessageStatus,
@@ -299,10 +313,12 @@ class MessageBuilder {
 
 // 内容流基类
 class ContentStream<T> {
-  protected socket: Socket;
+  readonly socket: Socket;
   protected messageId: string;
   protected contentId: string;
   protected contentType: ContentType;
+  private pendingAppend = "";
+  private appendTimer: NodeJS.Timeout | null = null;
 
   constructor(socket: Socket, messageId: string, contentId: string, contentType: ContentType) {
     this.socket = socket;
@@ -315,13 +331,27 @@ class ContentStream<T> {
     return this.contentId;
   }
 
-  // 流式追加数据
+  // 流式追加数据：STREAM_FLUSH_MS 内的 chunk 合并后一次发送
   append(chunk: string) {
+    this.pendingAppend += chunk;
+    pendingStreams.add(this);
+    this.appendTimer ??= setTimeout(() => this.flush(), STREAM_FLUSH_MS);
+    return this;
+  }
+
+  // 立即发送尚未发送的追加数据
+  flush() {
+    if (this.appendTimer) clearTimeout(this.appendTimer);
+    this.appendTimer = null;
+    pendingStreams.delete(this);
+    if (!this.pendingAppend) return this;
+    const data = this.pendingAppend;
+    this.pendingAppend = "";
     this.socket.emit("content:update", {
       messageId: this.messageId,
       contentId: this.contentId,
       type: this.contentType,
-      data: chunk,
+      data,
       strategy: "append",
       status: "streaming",
     });
@@ -330,6 +360,7 @@ class ContentStream<T> {
 
   // 合并/替换数据
   merge(data: T) {
+    this.flush();
     this.socket.emit("content:update", {
       messageId: this.messageId,
       contentId: this.contentId,
@@ -343,6 +374,7 @@ class ContentStream<T> {
 
   // 完成内容
   complete(finalData?: T) {
+    this.flush();
     this.socket.emit("content:update", {
       messageId: this.messageId,
       contentId: this.contentId,
@@ -355,6 +387,7 @@ class ContentStream<T> {
 
   // 错误
   error() {
+    this.flush();
     this.socket.emit("content:update", {
       messageId: this.messageId,
       contentId: this.contentId,
@@ -372,6 +405,7 @@ class ThinkingStream extends ContentStream<ThinkingContent["data"]> {
 
   // 追加思考文本
   appendText(chunk: string) {
+    this.flush();
     this.socket.emit("content:update", {
       messageId: this.messageId,
       contentId: this.contentId,
@@ -385,6 +419,7 @@ class ThinkingStream extends ContentStream<ThinkingContent["data"]> {
 
   // 更新标题
   updateTitle(title: string) {
+    this.flush();
     this.socket.emit("content:update", {
       messageId: this.messageId,
       contentId: this.contentId,
@@ -408,6 +443,7 @@ class AutoThinkingTextStream extends ContentStream<string> {
   private thinkingStream: ThinkingStream | null = null;
   private thinkingBuffer = "";
   private thinkingStartTime: number = 0;
+  private thinkingTimer: NodeJS.Timeout | null = null;
 
   constructor(socket: Socket, messageId: string, contentId: string, messageBuilder: MessageBuilder) {
     super(socket, messageId, contentId, "text");
@@ -440,6 +476,7 @@ class AutoThinkingTextStream extends ContentStream<string> {
         const openIndex = rest.indexOf(AutoThinkingTextStream.OPEN_TAG);
         if (openIndex >= 0) {
           this.flushText(rest.slice(0, openIndex));
+          this.flush();
           this.inThinking = true;
           this.thinkingStartTime = Date.now();
           this.thinkingBuffer = "";
@@ -506,6 +543,7 @@ class AutoThinkingTextStream extends ContentStream<string> {
       this.thinkingStream.error();
       this.thinkingStream = null;
     }
+    this.clearThinkingTimer();
     this.pending = "";
     this.thinkingBuffer = "";
     this.inThinking = false;
@@ -518,11 +556,20 @@ class AutoThinkingTextStream extends ContentStream<string> {
     super.append(text);
   }
 
-  /** 输出思考文本：累积完整内容，用 merge 策略发送，避免前端 append 丢失 */
+  /** 输出思考文本：累积完整内容，用 merge 策略发送，避免前端 append 丢失；节流发送，避免每个 chunk 都重发全文 */
   private flushThinking(text: string) {
     if (!text) return;
     this.thinkingBuffer += text;
-    this.ensureThinkingStream().merge({ title: "思考中...", text: this.thinkingBuffer });
+    this.ensureThinkingStream();
+    this.thinkingTimer ??= setTimeout(() => {
+      this.thinkingTimer = null;
+      this.thinkingStream?.merge({ title: "思考中...", text: this.thinkingBuffer });
+    }, STREAM_FLUSH_MS);
+  }
+
+  private clearThinkingTimer() {
+    if (this.thinkingTimer) clearTimeout(this.thinkingTimer);
+    this.thinkingTimer = null;
   }
 
   private ensureThinkingStream() {
@@ -534,6 +581,7 @@ class AutoThinkingTextStream extends ContentStream<string> {
   }
 
   private finishThinking() {
+    this.clearThinkingTimer();
     if (this.thinkingStream) {
       const elapsed = ((Date.now() - this.thinkingStartTime) / 1000).toFixed(1);
       this.thinkingStream.updateTitle(`思考完毕（${elapsed}秒）`);

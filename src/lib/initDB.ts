@@ -1,6 +1,5 @@
 import { Knex } from "knex";
 import { v4 as uuid } from "uuid";
-import { getEmbedding } from "@/utils/agent/embedding";
 
 interface TableSchema {
   name: string;
@@ -299,6 +298,10 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
           {
             key: "deepRetrieveSummaryLimit",
             value: 5,
+          },
+          {
+            key: "embeddingEnabled",
+            value: "0",
           },
           {
             key: "modelOnnxFile",
@@ -927,12 +930,6 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
             state: 1,
           },
         ];
-        await Promise.all(
-          list.map(async (item) => {
-            const embedding = await getEmbedding(item.description);
-            item.embedding = JSON.stringify(embedding);
-          }),
-        );
         await knex("o_skillList").insert(list);
       },
     },

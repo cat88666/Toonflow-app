@@ -1,7 +1,6 @@
 import { generateText, streamText, wrapLanguageModel, stepCountIs, extractReasoningMiddleware } from "ai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import axios from "axios";
-import { transform } from "sucrase";
 import u from "@/utils";
 
 type AiType =
@@ -122,9 +121,7 @@ async function getVendorTemplateFn(fnName: FnName, modelName: `${string}:${strin
   const modelList = await u.vendor.getModelList(id);
   const selectedModel = modelList.find((i: any) => i.modelName == name);
   if (!selectedModel) throw new Error(`未找到模型 ${name} id=${id}`);
-  const code = u.vendor.getCode(id);
-  const jsCode = transform(code, { transforms: ["typescript"] }).code;
-  const running = u.vm(jsCode);
+  const running = u.vm(u.vendor.getJsCode(id));
   if (running.vendor) {
     Object.assign(running.vendor.inputValues, JSON.parse(vendorConfigData.inputValues ?? "{}"));
     running.vendor.models = modelList;
