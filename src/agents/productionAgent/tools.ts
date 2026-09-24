@@ -262,35 +262,40 @@ export default (toolCpnfig: ToolConfig) => {
           .toJSONSchema(),
       ),
       execute: async (raw) => {
+        const prompt = raw.prompt?.trim() ?? null;
+        if (raw.shouldGenerateImage === "true") {
+          if (!prompt || prompt.length < 20) throw new Error("分镜图提示词过短，已拒绝写入");
+          if (/<\/?parameter(?:=|\b)/i.test(prompt)) throw new Error("分镜图提示词包含异常 XML 参数，已拒绝写入");
+        }
         const thinking = msg.thinking("正在新增 分镜面板 数据...");
         const data = {
           videoDesc: raw.videoDesc,
-          prompt: raw.prompt,
+          prompt,
           track: raw.track,
           duration: raw.duration,
           associateAssetsIds: raw.associateAssetsIds ?? [],
           shouldGenerateImage: raw.shouldGenerateImage,
         };
-        socketQueue(
-          () =>
-            new Promise((resolve, reject) =>
-              socket.emit("addStoryboard", { ...data }, (res: any) => {
-                if (res?.error) return reject(new Error(res.error));
-                resolve(res);
-              }),
-            ),
-        )
-          .then((res) => {
-            thinking.appendText("新增的分镜数据:\n" + JSON.stringify(data, null, 2));
-            thinking.updateTitle("新增分镜成功");
-            thinking.complete();
-          })
-          .catch((e) => {
-            thinking.appendText("新增的分镜数据:\n" + JSON.stringify(data, null, 2));
-            thinking.updateTitle("新增分镜失败");
-            thinking.complete();
-          });
-        return true;
+        try {
+          const res = await socketQueue(
+            () =>
+              new Promise((resolve, reject) =>
+                socket.emit("addStoryboard", { ...data }, (res: any) => {
+                  if (res?.error) return reject(new Error(res.error));
+                  resolve(res);
+                }),
+              ),
+          );
+          thinking.appendText("新增的分镜数据:\n" + JSON.stringify(data, null, 2));
+          thinking.updateTitle("新增分镜成功");
+          thinking.complete();
+          return res ?? true;
+        } catch (e) {
+          thinking.appendText("新增的分镜数据:\n" + JSON.stringify(data, null, 2));
+          thinking.updateTitle("新增分镜失败");
+          thinking.complete();
+          throw e;
+        }
       },
     }),
   };
