@@ -16,6 +16,7 @@ export default router.post(
     await u.db("o_vendorConfig").where("id", id).del();
     await u.db("o_agentDeploy").where("vendorId", id).update({
       model: null,
+      modelName: null,
       vendorId: null,
     });
     fs.rmSync(path.join(u.getPath("vendor"), `${id}.ts`), { recursive: true, force: true });

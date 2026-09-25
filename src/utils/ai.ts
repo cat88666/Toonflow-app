@@ -40,71 +40,63 @@ const AiTypeValues: AiType[] = [
   "productionAgent:storyboardGenAgent",
   "productionAgent:storyboardPanelAgent",
   "productionAgent:storyboardTableAgent",
-  "universalAi",
 ];
+
+async function getUsableTextModel(modelName?: string | null) {
+  if (!modelName) return null;
+  const [vendorId, name] = modelName.split(/:(.+)/);
+  if (!vendorId || !name) return null;
+  const vendor = await u.db("o_vendorConfig").where({ id: vendorId, enable: 1 }).first();
+  if (!vendor) return null;
+  const model = (await u.vendor.getModelList(vendorId)).find((item: any) => item.modelName === name && item.type === "text");
+  return model ? { vendorId, model } : null;
+}
+
+async function findFallbackTextModel() {
+  const configured = await u.db("o_agentDeploy").whereNotNull("modelName").whereNot("modelName", "").orderBy("id");
+  for (const item of configured) {
+    const usable = await getUsableTextModel(item.modelName);
+    if (usable) return usable;
+  }
+
+  const vendors = await u.db("o_vendorConfig").where("enable", 1).orderBy("id");
+  for (const vendor of vendors) {
+    const model = (await u.vendor.getModelList(vendor.id!)).find((item: any) => item.type === "text");
+    if (model) return { vendorId: vendor.id!, model };
+  }
+  return null;
+}
+
+async function resolveAgentModelConfig(value: AiType) {
+  const agentUseMode = await u.db("o_setting").where("key", "agentUseMode").first();
+  const key = agentUseMode?.value === "1" ? value : value.split(/:(.+)/)[0];
+  const config = await u.db("o_agentDeploy").where("key", key).first();
+  if (!config) throw new Error(`未找到 AI 配置项：${key}`);
+  if (await getUsableTextModel(config.modelName)) return config;
+
+  const fallback = await findFallbackTextModel();
+  if (!fallback) throw new Error("没有可用的文本模型，请先在供应商配置中启用并配置一个文本模型");
+
+  const repaired = {
+    model: fallback.model.modelName,
+    modelName: `${fallback.vendorId}:${fallback.model.modelName}`,
+    vendorId: fallback.vendorId,
+  };
+  await u.db("o_agentDeploy").where("id", config.id).update(repaired);
+  return { ...config, ...repaired };
+}
+
 async function resolveModelName(value: AiType | `${string}:${string}`): Promise<`${string}:${string}`> {
   if (AiTypeValues.includes(value as AiType)) {
-    const agentUseModeVal = await u.db("o_setting").where("key", "agentUseMode").first();
-
-    //正常流程
-    //高级配置
-    if (agentUseModeVal?.value == "1") {
-      const agentDeployData = await u.db("o_agentDeploy").where("key", value).first();
-      if (!agentDeployData?.modelName) throw new Error(`高级配置模式下，未找到对应的模型配置 ${value}`);
-      return agentDeployData?.modelName as `${number}:${string}`;
-    }
-    //简易配置
-    if (agentUseModeVal?.value == "0") {
-      const [mainly] = value!.split(/:(.+)/);
-      const mainlyData = await u.db("o_agentDeploy").where("key", mainly).first();
-      if (!mainlyData?.modelName) throw new Error(`简易配置模式下，未找到部署配置 ${value}`);
-      return mainlyData?.modelName as `${number}:${string}`;
-    }
-
-    //未查到agentUseModeVal 维持原判断
-    const agentDeployData = await u.db("o_agentDeploy").where("key", value).first();
-    let modelName = null;
-
-    if (!agentDeployData?.modelName) {
-      const [mainly] = agentDeployData!.key!.split(/:(.+)/);
-      const mainlyData = await u.db("o_agentDeploy").where("key", mainly).first();
-      if (!mainlyData?.modelName) throw new Error(`未找到部署配置 ${value}`);
-      modelName = mainlyData.modelName;
-    }
-    modelName = agentDeployData?.modelName || modelName;
-    return modelName as `${number}:${string}`;
+    const config = await resolveAgentModelConfig(value as AiType);
+    return config.modelName as `${string}:${string}`;
   }
-  return value as `${number}:${string}`;
+  return value as `${string}:${string}`;
 }
 
 async function getModelConfig(value: AiType | `${string}:${string}`) {
   if (AiTypeValues.includes(value as AiType)) {
-    const agentUseModeVal = await u.db("o_setting").where("key", "agentUseMode").first();
-    //正常流程
-    //高级配置
-    if (agentUseModeVal?.value == "1") {
-      const agentDeployData = await u.db("o_agentDeploy").where("key", value).first();
-      if (!agentDeployData?.modelName) throw new Error(`高级配置模式下，未找到对应的模型配置 ${value}`);
-      return agentDeployData;
-    }
-    //简易配置
-    if (agentUseModeVal?.value == "0") {
-      const [mainly] = value!.split(/:(.+)/);
-      const mainlyData = await u.db("o_agentDeploy").where("key", mainly).first();
-      if (!mainlyData?.modelName) throw new Error(`简易配置模式下，未找到部署配置 ${value}`);
-      return mainlyData;
-    }
-
-    //未查到 agentUseModelVal 维持原流程
-    const agentDeployData = await u.db("o_agentDeploy").where("key", value).first();
-
-    if (!agentDeployData?.modelName) {
-      const [mainly] = agentDeployData!.key!.split(/:(.+)/);
-      const mainlyData = await u.db("o_agentDeploy").where("key", mainly).first();
-      if (!mainlyData?.modelName) throw new Error(`未找到部署配置 ${value}`);
-      return mainlyData;
-    }
-    return agentDeployData;
+    return resolveAgentModelConfig(value as AiType);
   }
   return null;
 }
