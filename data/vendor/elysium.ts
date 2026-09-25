@@ -1,6 +1,6 @@
 const vendor = {
   id: "elysium",
-  version: "3.0",
+  version: "3.1",
   author: "Elysium",
   name: "Elysium",
   description: "Elysium 模型网关（OpenAI 风格接口）：文本、图片、视频。",
@@ -49,9 +49,10 @@ const failure = (prefix, error) => {
   return new Error(`${prefix}: ${message}`);
 };
 
-const textRequest = (model) => {
+const textRequest = (model, think) => {
   const { baseUrl, headers } = settings();
-  return createOpenAI({ baseURL: baseUrl, apiKey: headers.Authorization.slice(7) }).chat(model.modelName);
+  const extraBody = { chat_template_kwargs: { enable_thinking: think } };
+  return createOpenAI({ baseURL: baseUrl, apiKey: headers.Authorization.slice(7), extraBody }).chat(model.modelName);
 };
 
 const imageRequest = async (config, model) => {

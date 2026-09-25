@@ -45,6 +45,15 @@ const AiTypeValues: AiType[] = [
   "productionAgent:storyboardTableAgent",
 ];
 
+const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
+const CONTROL_AGENT_MAX_OUTPUT_TOKENS = 1024;
+
+export function resolveMaxOutputTokens(aiType: AiType | `${string}:${string}`, configured?: number | null) {
+  if (configured && configured > 0) return configured;
+  if (aiType.endsWith(":decisionAgent") || aiType.endsWith(":supervisionAgent")) return CONTROL_AGENT_MAX_OUTPUT_TOKENS;
+  return DEFAULT_MAX_OUTPUT_TOKENS;
+}
+
 async function getUsableTextModel(modelName?: string | null) {
   if (!modelName) return null;
   const [vendorId, name] = modelName.split(/:(.+)/);
@@ -188,24 +197,26 @@ class AiText {
   }
   async invoke(input: Omit<Parameters<typeof generateText>[0], "model">) {
     const config = await getModelConfig(this.AiType);
+    const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config?.maxOutputTokens);
 
     return generateText({
       ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
       ...input,
       model: await this.resolveModel(),
       ...(config?.temperature && { temperature: config.temperature }),
-      ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
+      maxOutputTokens,
     } as Parameters<typeof generateText>[0]);
   }
   async stream(input: Omit<Parameters<typeof streamText>[0], "model">) {
     const config = await getModelConfig(this.AiType);
+    const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config?.maxOutputTokens);
 
     return streamText({
       ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
       ...input,
       model: await this.resolveModel(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" })),
       ...(config?.temperature && { temperature: config.temperature }),
-      ...(config?.maxOutputTokens && { maxOutputTokens: config.maxOutputTokens }),
+      maxOutputTokens,
     } as Parameters<typeof streamText>[0]);
   }
 }
