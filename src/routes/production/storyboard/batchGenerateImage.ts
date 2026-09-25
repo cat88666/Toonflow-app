@@ -6,6 +6,7 @@ import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { Output, tool } from "ai";
 import { assetItemSchema } from "@/agents/productionAgent/tools";
+import { requireStoryboardPrompt } from "@/lib/storyboardPrompt";
 const router = express.Router();
 export type AssetData = z.infer<typeof assetItemSchema>;
 
@@ -39,11 +40,34 @@ export default router.post(
     const storyboardData = await u.db("o_storyboard").where("scriptId", scriptId).where("projectId", projectId).whereIn("id", finalStoryboardIds);
     if (!storyboardData.length) return res.status(500).send(error("未查到分镜数据"));
     const storyIds = storyboardData.map((i) => i.id);
+    const validPromptById = new Map<number, string>();
+    const invalidRows: typeof storyboardData = [];
+    for (const item of storyboardData) {
+      try {
+        validPromptById.set(item.id!, requireStoryboardPrompt(item.prompt));
+      } catch {
+        invalidRows.push(item);
+      }
+    }
+    const invalidIds = invalidRows.filter((item) => compulsory || item.shouldGenerateImage !== 0).map((item) => item.id!);
+    if (invalidIds.length) {
+      await u.db("o_storyboard").whereIn("id", invalidIds).where("scriptId", scriptId).update({
+        filePath: "",
+        reason: "缺少有效的分镜图提示词，未调用图片模型",
+        state: compulsory ? "生成失败" : "未生成",
+        shouldGenerateImage: 0,
+      });
+    }
+    const validStoryIds = storyIds.filter((id) => validPromptById.has(id!));
     if (compulsory) {
-      await u.db("o_storyboard").whereIn("id", storyIds).where("scriptId", scriptId).update({ state: "生成中", shouldGenerateImage: 1 });
+      if (validStoryIds.length) {
+        await u.db("o_storyboard").whereIn("id", validStoryIds).where("scriptId", scriptId).update({ state: "生成中", shouldGenerateImage: 1, reason: "" });
+      }
     } else {
       await u.db("o_storyboard").whereIn("id", storyIds).where("scriptId", scriptId).where("shouldGenerateImage", 0).update({ state: "未生成" });
-      await u.db("o_storyboard").whereIn("id", storyIds).where("scriptId", scriptId).where("shouldGenerateImage", 1).update({ state: "生成中" });
+      if (validStoryIds.length) {
+        await u.db("o_storyboard").whereIn("id", validStoryIds).where("scriptId", scriptId).where("shouldGenerateImage", 1).update({ state: "生成中", reason: "" });
+      }
     }
 
     const projectSettingData = await u.db("o_project").where("id", projectId).select("imageModel", "imageQuality", "artStyle", "videoRatio").first();
@@ -93,7 +117,7 @@ export default router.post(
 
     const generateTask = async (item: (typeof storyboardData)[number]) => {
       const repeloadObj = {
-        prompt: item.prompt!,
+        prompt: validPromptById.get(item.id!)!,
         size: projectSettingData?.imageQuality as "1K" | "2K" | "4K",
         aspectRatio: projectSettingData?.videoRatio as `${number}:${number}`,
       };
@@ -117,7 +141,7 @@ export default router.post(
           state: "已完成",
         });
       } catch (e) {
-        u.db("o_storyboard")
+        await u.db("o_storyboard")
           .where("id", item.id)
           .update({
             filePath: "",
@@ -129,9 +153,9 @@ export default router.post(
     // 按 concurrentCount 控制并发数，分批执行；跳过 shouldGenerateImage === 0 的分镜
     let generateList = [];
     if (compulsory) {
-      generateList = storyboardData;
+      generateList = storyboardData.filter((item) => validPromptById.has(item.id!));
     } else {
-      generateList = storyboardData.filter((item) => item.shouldGenerateImage !== 0);
+      generateList = storyboardData.filter((item) => item.shouldGenerateImage !== 0 && validPromptById.has(item.id!));
     }
     for (let i = 0; i < generateList.length; i += concurrentCount) {
       const batch = generateList.slice(i, i + concurrentCount);

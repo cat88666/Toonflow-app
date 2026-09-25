@@ -28,7 +28,7 @@ description: >-
 ### 执行流程
 
 1. 获取 `storyboard`
-2. 提取真实分镜 ID 列表
+2. 仅提取 `shouldGenerateImage=1` 且 `prompt` 为有效非空文本的真实分镜 ID 列表；`null`、`"null"`、`"undefined"`、空白或过短 prompt 必须跳过
 3. 调用 `generate_storyboard_images({ ids: [真实分镜ID列表] })` 生成分镜图片（异步，发起即返回）
 
 ### 约束
@@ -36,3 +36,4 @@ description: >-
 - 前置条件：分镜面板已写入完成
 - 图片必须与分镜描述匹配
 - 仅使用 `storyboard` 中的真实分镜 ID，禁止编造或复用无效 ID
+- 禁止为 `shouldGenerateImage=0` 或无有效 prompt 的分镜发起图片生成

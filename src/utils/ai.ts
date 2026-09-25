@@ -1,7 +1,10 @@
 import { generateText, streamText, wrapLanguageModel, stepCountIs, extractReasoningMiddleware } from "ai";
 import { devToolsMiddleware } from "@ai-sdk/devtools";
 import axios from "axios";
+import crypto from "node:crypto";
+import sharp from "sharp";
 import u from "@/utils";
+import { normalizeStoryboardPrompt } from "@/lib/storyboardPrompt";
 
 type AiType =
   | "scriptAgent"
@@ -232,6 +235,47 @@ interface TaskRecord {
   projectId: number; // 项目ID
 }
 
+const recentImageResults = new Map<string, string>();
+
+export async function validateImageResult(result: string, promptValue: unknown) {
+  const prompt = normalizeStoryboardPrompt(promptValue);
+  if (!prompt) throw new Error("图片提示词为空或无效，已拒绝调用模型");
+  if (!result) throw new Error("图片模型未返回图片数据");
+
+  const buffer = Buffer.from(result.replace(/^data:[^;]+;base64,/, ""), "base64");
+  if (!buffer.length) throw new Error("图片模型返回了空图片数据");
+
+  let metadata: sharp.Metadata;
+  let stats: sharp.Stats;
+  try {
+    const image = sharp(buffer, { failOn: "error" });
+    [metadata, stats] = await Promise.all([image.metadata(), image.stats()]);
+  } catch {
+    throw new Error("图片模型返回的数据无法解码");
+  }
+
+  if (!metadata.width || !metadata.height || metadata.width < 64 || metadata.height < 64) {
+    throw new Error("图片模型返回的图片尺寸异常");
+  }
+  const colorChannels = stats.channels.slice(0, 3);
+  if (colorChannels.length && colorChannels.every((channel) => channel.mean <= 3 && channel.stdev <= 3)) {
+    throw new Error("图片模型返回了近乎纯黑的异常图片");
+  }
+  if (metadata.hasAlpha && stats.channels.at(-1)?.mean === 0) {
+    throw new Error("图片模型返回了完全透明的异常图片");
+  }
+
+  const hash = crypto.createHash("sha256").update(buffer).digest("hex");
+  const previousPrompt = recentImageResults.get(hash);
+  if (previousPrompt && previousPrompt !== prompt) {
+    throw new Error("图片模型对不同提示词返回了完全相同的异常图片");
+  }
+  recentImageResults.set(hash, prompt);
+  if (recentImageResults.size > 100) recentImageResults.delete(recentImageResults.keys().next().value!);
+
+  return buffer;
+}
+
 class AiImage {
   private key: `${string}:${string}`;
   private result: string = "";
@@ -241,10 +285,14 @@ class AiImage {
   async run(input: ImageConfig, taskRecord?: TaskRecord) {
     const modelName = await resolveModelName(this.key);
     const exec = async (mn: `${string}:${string}`) => {
+      const prompt = normalizeStoryboardPrompt(input.prompt);
+      if (!prompt) throw new Error("图片提示词为空或无效，已拒绝调用模型");
+      input.prompt = prompt;
       const fn = await getVendorTemplateFn("imageRequest", mn);
       await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
       this.result = await fn(input);
       if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
+      await validateImageResult(this.result, input.prompt);
       return this;
     };
     if (taskRecord) {

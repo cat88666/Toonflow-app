@@ -1,5 +1,6 @@
 import { tool, jsonSchema, Tool } from "ai";
 import { z } from "zod";
+import { normalizeStoryboardPrompt, requireStoryboardPrompt } from "@/lib/storyboardPrompt";
 import _ from "lodash";
 import ResTool from "@/socket/resTool";
 import u from "@/utils";
@@ -262,11 +263,7 @@ export default (toolCpnfig: ToolConfig) => {
           .toJSONSchema(),
       ),
       execute: async (raw) => {
-        const prompt = raw.prompt?.trim() ?? null;
-        if (raw.shouldGenerateImage === "true") {
-          if (!prompt || prompt.length < 20) throw new Error("分镜图提示词过短，已拒绝写入");
-          if (/<\/?parameter(?:=|\b)/i.test(prompt)) throw new Error("分镜图提示词包含异常 XML 参数，已拒绝写入");
-        }
+        const prompt = raw.shouldGenerateImage === "true" ? requireStoryboardPrompt(raw.prompt) : normalizeStoryboardPrompt(raw.prompt);
         const thinking = msg.thinking("正在新增 分镜面板 数据...");
         const data = {
           videoDesc: raw.videoDesc,

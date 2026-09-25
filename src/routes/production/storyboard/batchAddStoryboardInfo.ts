@@ -3,19 +3,20 @@ import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { normalizeStoryboardPrompt, requireStoryboardPrompt } from "@/lib/storyboardPrompt";
 const router = express.Router();
 export default router.post(
   "/",
   validateFields({
     data: z.array(
       z.object({
-        prompt: z.string(),
+        prompt: z.string().nullable(),
         duration: z.number(),
         track: z.string(),
         state: z.string(),
         src: z.string().nullable(),
         videoDesc: z.string(),
-        shouldGenerateImage: z.number(),
+        shouldGenerateImage: z.union([z.literal(0), z.literal(1)]),
         associateAssetsIds: z.array(z.number()),
       }),
     ),
@@ -26,8 +27,9 @@ export default router.post(
     const { data, scriptId, projectId } = req.body;
     if (!data.length) return res.status(400).send({ success: false, message: "数据不能为空" });
     for (const item of data) {
+      const prompt = item.shouldGenerateImage === 1 ? requireStoryboardPrompt(item.prompt) : normalizeStoryboardPrompt(item.prompt);
       const [id] = await u.db("o_storyboard").insert({
-        prompt: item.prompt,
+        prompt,
         duration: String(item.duration),
         state: item.state,
         scriptId,
