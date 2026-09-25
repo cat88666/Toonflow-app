@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeStoryboardPrompt, requireStoryboardPrompt } from "./storyboardPrompt";
+import { normalizeStoryboardPrompt, requireStoryboardPrompt, storyboardPromptForClient } from "./storyboardPrompt";
 
 test("normalizes missing prompt sentinels", () => {
   for (const value of [null, undefined, "", "   ", "null", " NULL ", "undefined"]) {
@@ -10,6 +10,11 @@ test("normalizes missing prompt sentinels", () => {
 
 test("keeps and trims a valid prompt", () => {
   assert.equal(normalizeStoryboardPrompt("  a valid storyboard image prompt  "), "a valid storyboard image prompt");
+});
+
+test("serializes a missing prompt as an empty string for client-side ID matching", () => {
+  assert.equal(storyboardPromptForClient(null), "");
+  assert.equal(storyboardPromptForClient("  valid prompt  "), "valid prompt");
 });
 
 test("rejects prompts that must not reach image generation", () => {

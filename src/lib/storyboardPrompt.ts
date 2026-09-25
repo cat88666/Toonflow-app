@@ -7,6 +7,10 @@ export function normalizeStoryboardPrompt(value: unknown): string | null {
   return prompt;
 }
 
+export function storyboardPromptForClient(value: unknown): string {
+  return normalizeStoryboardPrompt(value) ?? "";
+}
+
 export function requireStoryboardPrompt(value: unknown): string {
   const prompt = normalizeStoryboardPrompt(value);
   if (!prompt || prompt.length < 20) throw new Error("分镜图提示词无效或过短，已拒绝生成");

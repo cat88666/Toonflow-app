@@ -3,7 +3,7 @@ import u from "@/utils";
 import { z } from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
-import { normalizeStoryboardPrompt, requireStoryboardPrompt } from "@/lib/storyboardPrompt";
+import { normalizeStoryboardPrompt, requireStoryboardPrompt, storyboardPromptForClient } from "@/lib/storyboardPrompt";
 const router = express.Router();
 export default router.post(
   "/",
@@ -99,7 +99,7 @@ export default router.post(
           src: i.filePath ? await u.oss.getSmallImageUrl(i.filePath) : "",
           id: i.id,
           trackId: i.trackId,
-          prompt: i.prompt,
+          prompt: storyboardPromptForClient(i.prompt),
           duration: Number(i.duration),
           state: i.state,
           scriptId: i.scriptId,

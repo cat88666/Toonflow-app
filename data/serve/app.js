@@ -236790,6 +236790,9 @@ function normalizeStoryboardPrompt(value) {
   if (!prompt || invalidPromptValues.has(prompt.toLowerCase())) return null;
   return prompt;
 }
+function storyboardPromptForClient(value) {
+  return normalizeStoryboardPrompt(value) ?? "";
+}
 function requireStoryboardPrompt(value) {
   const prompt = normalizeStoryboardPrompt(value);
   if (!prompt || prompt.length < 20) throw new Error("\u5206\u955C\u56FE\u63D0\u793A\u8BCD\u65E0\u6548\u6216\u8FC7\u77ED\uFF0C\u5DF2\u62D2\u7EDD\u751F\u6210");
@@ -240874,7 +240877,7 @@ var init_batchAddStoryboardInfo = __esm({
               src: i.filePath ? await utils_default.oss.getSmallImageUrl(i.filePath) : "",
               id: i.id,
               trackId: i.trackId,
-              prompt: i.prompt,
+              prompt: storyboardPromptForClient(i.prompt),
               duration: Number(i.duration),
               state: i.state,
               scriptId: i.scriptId,
