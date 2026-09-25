@@ -2,10 +2,6 @@
 
 Toonflow 是面向 AI 短剧生产的开源工作台，覆盖原著导入、剧本改编、角色与场景生成、分镜制作、视频生成和成片导出。
 
-[GitHub](https://github.com/HBAI-Ltd/Toonflow-app) | [Gitee](https://gitee.com/HBAI-Ltd/Toonflow-app) | [视频教程](https://www.bilibili.com/video/BV1oXD7BqEqJ)
-
-简体中文 | [繁體中文](./docs/README.zhtw.md) | [English](./docs/README.en.md) | [ไทย](./docs/README.th.md) | [Tiếng Việt](./docs/README.vi.md) | [日本語](./docs/README.ja.md) | [Русский](./docs/README.ru.md)
-
 ## 主要功能
 
 - 无限画布：统一组织剧本、角色、场景、分镜、素材和视频节点。
@@ -16,21 +12,6 @@ Toonflow 是面向 AI 短剧生产的开源工作台，覆盖原著导入、剧�
 - Skill 配置：使用 Markdown 文件管理 ScriptAgent 和 ProductionAgent 的核心提示词。
 
 ## 快速开始
-
-### 安装客户端
-
-前往 [GitHub Releases](https://github.com/HBAI-Ltd/Toonflow-app/releases) 下载 Windows、Linux 或 macOS 安装包。
-
-macOS 首次打开时如遇证书提示，请在“系统设置 > 隐私与安全性”中允许应用运行。
-
-首次登录账号：
-
-```text
-用户名：admin
-密码：admin123
-```
-
-登录后请立即修改默认密码。
 
 ### 配置模型
 
@@ -168,24 +149,4 @@ Dockerfile                Docker 构建文件
 electron-builder.yml      Electron 打包配置
 ```
 
-前端源代码位于 [Toonflow-web](https://github.com/HBAI-Ltd/Toonflow-web)。前端构建完成后，将 `dist` 目录内容复制到本仓库的 `data/web` 目录即可集成。
 
-## 贡献
-
-`master` 分支不接受 Pull Request，请将改动提交到 `develop` 分支。
-
-提交前请运行：
-
-```bash
-yarn lint
-yarn build
-```
-
-## 许可证
-
-项目许可证和补充条款见 [LICENSE](./LICENSE)，第三方依赖清单见 [NOTICES.txt](./NOTICES.txt)。
-
-## 联系方式
-
-- Issues：[GitHub Issues](https://github.com/HBAI-Ltd/Toonflow-app/issues)
-- 邮箱：[ltlctools@outlook.com](mailto:ltlctools@outlook.com?subject=Toonflow咨询)
