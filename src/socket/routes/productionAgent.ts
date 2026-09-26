@@ -3,6 +3,7 @@ import u from "@/utils";
 import { Namespace, Socket } from "socket.io";
 import * as agent from "@/agents/productionAgent/index";
 import ResTool from "@/socket/resTool";
+import { agentRunScheduler } from "@/utils/agent/scheduler";
 
 async function verifyToken(rawToken: string): Promise<Boolean> {
   const setting = await u.db("o_setting").where("key", "tokenKey").select("value").first();
@@ -40,10 +41,15 @@ export default (nsp: Namespace) => {
       scriptId: socket.handshake.auth.scriptId,
     });
     let abortController: AbortController | null = null;
+    let currentRun: Promise<void> | null = null;
 
     const thinkConfig: agent.AgentContext["thinkConfig"] = {};
 
-    socket.on("updateContext", (data: { isolationKey: string; projectId: number; scriptId: number }, callback) => {
+    socket.on("updateContext", async (data: { isolationKey: string; projectId: number; scriptId: number }, callback) => {
+      abortController?.abort();
+      await currentRun?.catch(() => undefined);
+      abortController = null;
+      currentRun = null;
       isolationKey = data.isolationKey;
       resTool = new ResTool(socket, {
         projectId: data.projectId,
@@ -58,6 +64,7 @@ export default (nsp: Namespace) => {
       abortController?.abort();
       abortController = new AbortController();
       const currentController = abortController;
+      const projectKey = String(resTool.data.projectId);
 
       const msg = resTool.newMessage("assistant", "视频策划");
       const ctx: agent.AgentContext = {
@@ -72,14 +79,19 @@ export default (nsp: Namespace) => {
       };
 
       try {
-        await agent.runDecisionAI(ctx);
+        currentRun = agentRunScheduler.run(projectKey, currentController.signal, () => agent.runDecisionAI(ctx));
+        await currentRun;
       } catch (err: any) {
-        if (err.name !== "AbortError" && !currentController.signal.aborted) {
+        if (err.name === "AbortError" || currentController.signal.aborted) {
+          msg.complete();
+        } else {
           console.error("[productionAgent] chat error:", u.error(err).message);
+          msg.error(u.error(err).message);
         }
       } finally {
         if (abortController === currentController) {
           abortController = null;
+          currentRun = null;
         }
       }
     });
@@ -94,8 +106,11 @@ export default (nsp: Namespace) => {
       abortController?.abort();
       abortController = null;
     });
-  });
-  nsp.on("disconnect", (socket: Socket) => {
-    console.log("[productionAgent] 已断开连接:", socket.id);
+
+    socket.on("disconnect", () => {
+      abortController?.abort();
+      abortController = null;
+      console.log("[productionAgent] 已断开连接:", socket.id);
+    });
   });
 };

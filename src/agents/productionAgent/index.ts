@@ -430,6 +430,13 @@ async function consumeFullStream(
         break;
       }
     }
+    if (syncMsg) {
+      const newMsg = syncMsg();
+      if (newMsg !== msg) {
+        msg = newMsg;
+        text = msg.text();
+      }
+    }
     text.complete();
     msg.complete();
   } catch (err: any) {

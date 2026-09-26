@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import type { memories as MemoryRow } from "@/types/database";
 import { tool, jsonSchema } from "ai";
 import { z } from "zod";
+import { agentRunScheduler, onAgentWork } from "@/utils/agent/scheduler";
 
 // ── 可调配置默认值 ──
 const DEFAULTS: {
@@ -47,7 +48,9 @@ async function getEmbedding(text: string): Promise<number[]> {
 }
 
 class Memory {
-  private static summaryJobs = new Set<string>();
+  private static summaryQueue = new Map<string, Memory>();
+  private static summaryRunning = false;
+  private static activeSummaryAbort: AbortController | null = null;
   private agentType: string;
   private isolationKey: string;
 
@@ -56,13 +59,93 @@ class Memory {
     this.isolationKey = isolationKey;
   }
 
-  private async generateSummary(contents: string[]): Promise<string> {
+  static interruptSummary() {
+    Memory.activeSummaryAbort?.abort();
+  }
+
+  private async generateSummary(contents: string[], abortSignal?: AbortSignal): Promise<string> {
     const { summaryMaxLength } = await this.getConfigData({ summaryMaxLength: DEFAULTS.summaryMaxLength });
-    const { text } = await u.Ai.Text(this.agentType as any).invoke({
+    const { text } = await u.Ai.Text(this.agentType as any, undefined, undefined, "background").invoke({
       system: `你是一个记忆压缩助手。请将以下多条记忆内容压缩为一段简洁的摘要，不超过${summaryMaxLength}个字符。只输出摘要内容，不要加任何前缀或解释。`,
       messages: [{ role: "user", content: contents.map((c, i) => `${i + 1}. ${c}`).join("\n") }],
+      abortSignal,
     });
     return text.slice(0, Number(summaryMaxLength));
+  }
+
+  private static enqueueSummary(memory: Memory) {
+    Memory.summaryQueue.set(memory.isolationKey, memory);
+    void Memory.drainSummaryQueue();
+  }
+
+  private static async drainSummaryQueue() {
+    if (Memory.summaryRunning) return;
+    if (agentRunScheduler.hasWork()) {
+      setTimeout(() => void Memory.drainSummaryQueue(), 1000);
+      return;
+    }
+    Memory.summaryRunning = true;
+    try {
+      while (Memory.summaryQueue.size > 0) {
+        if (agentRunScheduler.hasWork()) {
+          return;
+        }
+        const entry = Memory.summaryQueue.entries().next().value as [string, Memory] | undefined;
+        if (!entry) break;
+        const [isolationKey, memory] = entry;
+        Memory.summaryQueue.delete(isolationKey);
+        try {
+          if (await memory.summarizeOneBatch()) Memory.summaryQueue.set(isolationKey, memory);
+        } catch (error) {
+          const message = u.error(error).message;
+          if ((error as any)?.name === "AbortError" || /429|busy|繁忙|too many/i.test(message)) {
+            setTimeout(() => Memory.enqueueSummary(memory), 5000);
+          } else {
+            console.error("[memory] summary failed:", message);
+          }
+        }
+      }
+    } finally {
+      Memory.summaryRunning = false;
+      if (Memory.summaryQueue.size > 0) void Memory.drainSummaryQueue();
+    }
+  }
+
+  private async summarizeOneBatch(): Promise<boolean> {
+    const { messagesPerSummary, embeddingEnabled } = await this.getConfigData({
+      messagesPerSummary: DEFAULTS.messagesPerSummary,
+      embeddingEnabled: DEFAULTS.embeddingEnabled,
+    });
+    const batchSize = Number(messagesPerSummary);
+    const batch = await u.db("memories").where({ isolationKey: this.isolationKey, type: "message", summarized: 0 }).orderBy("createTime", "asc").limit(batchSize);
+    if (batch.length < batchSize) return false;
+
+    const batchIds = batch.map((message) => message.id);
+    const controller = new AbortController();
+    Memory.activeSummaryAbort = controller;
+    let summaryContent: string;
+    try {
+      summaryContent = await this.generateSummary(
+        batch.map((message) => message.content),
+        controller.signal,
+      );
+    } finally {
+      if (Memory.activeSummaryAbort === controller) Memory.activeSummaryAbort = null;
+    }
+    const summaryEmbedding = Number(embeddingEnabled) === 1 ? await getEmbedding(summaryContent) : null;
+    await u.db("memories").insert({
+      id: uuidv4(),
+      isolationKey: this.isolationKey,
+      type: "summary",
+      content: summaryContent,
+      embedding: summaryEmbedding ? JSON.stringify(summaryEmbedding) : null,
+      relatedMessageIds: JSON.stringify(batchIds),
+      summarized: 0,
+      createTime: Date.now(),
+    } as any);
+    await u.db("memories").whereIn("id", batchIds).update({ summarized: 1 });
+    const remaining = await u.db("memories").where({ isolationKey: this.isolationKey, type: "message", summarized: 0 }).count({ count: "*" }).first();
+    return Number(remaining?.count ?? 0) >= batchSize;
   }
 
   private async judgeSummaryRelevance(keyword: string, summaries: { id: string; content: string }[]): Promise<string[]> {
@@ -119,40 +202,7 @@ class Memory {
       createTime: options?.createTime ?? Date.now(),
     } as any);
 
-    // 检查未总结消息数量
-    const unsummarized = await u.db("memories").where({ isolationKey, type: "message", summarized: 0 }).orderBy("createTime", "asc");
-
-    if (unsummarized.length >= Number(messagesPerSummary) && !Memory.summaryJobs.has(isolationKey)) {
-      const batch = unsummarized.slice(0, Number(messagesPerSummary));
-      const batchIds = batch.map((m) => m.id);
-      const batchContents = batch.map((m) => m.content);
-
-      Memory.summaryJobs.add(isolationKey);
-      void (async () => {
-        try {
-          const summaryContent = await this.generateSummary(batchContents);
-          const summaryEmbedding = Number(embeddingEnabled) === 1 ? await getEmbedding(summaryContent) : null;
-          const summaryId = uuidv4();
-
-          await u.db("memories").insert({
-            id: summaryId,
-            isolationKey,
-            type: "summary",
-            content: summaryContent,
-            embedding: summaryEmbedding ? JSON.stringify(summaryEmbedding) : null,
-            relatedMessageIds: JSON.stringify(batchIds),
-            summarized: 0,
-            createTime: Date.now(),
-          } as any);
-
-          await u.db("memories").whereIn("id", batchIds).update({ summarized: 1 });
-        } catch (error) {
-          console.error("[memory] summary failed:", error);
-        } finally {
-          Memory.summaryJobs.delete(isolationKey);
-        }
-      })();
-    }
+    if (Number(messagesPerSummary) > 0) Memory.enqueueSummary(this);
   }
 
   async get(text: string) {
@@ -249,5 +299,7 @@ class Memory {
     };
   }
 }
+
+onAgentWork(() => Memory.interruptSummary());
 
 export default Memory;

@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import sharp from "sharp";
 import u from "@/utils";
 import { normalizeStoryboardPrompt } from "@/lib/storyboardPrompt";
+import { compactStepMessages, stepInputBudget } from "@/utils/aiContext";
 
 const AGENT_MAX_STEPS: Record<string, number> = {
   decisionAgent: 12,
@@ -146,17 +147,10 @@ async function resolveModelName(value: AiType | `${string}:${string}`): Promise<
   return value as `${string}:${string}`;
 }
 
-async function getModelConfig(value: AiType | `${string}:${string}`) {
-  if (AiTypeValues.includes(value as AiType)) {
-    return resolveAgentModelConfig(value as AiType);
-  }
-  return null;
-}
-
 async function getVendorTemplateFn(
   fnName: "textRequest",
   modelName: `${string}:${string}`,
-): Promise<(think?: boolean, thinkLevel?: 0 | 1 | 2 | 3) => any>;
+): Promise<(think?: boolean, thinkLevel?: 0 | 1 | 2 | 3, workload?: "interactive" | "background") => any>;
 async function getVendorTemplateFn(fnName: Exclude<FnName, "textRequest">, modelName: `${string}:${string}`): Promise<(input: any) => any>;
 async function getVendorTemplateFn(fnName: FnName, modelName: `${string}:${string}`): Promise<any> {
   const [id, name] = modelName.split(/:(.+)/);
@@ -173,9 +167,9 @@ async function getVendorTemplateFn(fnName: FnName, modelName: `${string}:${strin
   const fn = running[fnName];
   if (!fn) throw new Error(`未找到供应商配置中的函数 ${fnName} id=${id}`);
   if (fnName == "textRequest")
-    return (think?: boolean, thinkLevel: 0 | 1 | 2 | 3 = 0) => {
+    return (think?: boolean, thinkLevel: 0 | 1 | 2 | 3 = 0, workload: "interactive" | "background" = "interactive") => {
       const effectiveThink = think ?? !!selectedModel.think;
-      return fn(selectedModel, effectiveThink, thinkLevel);
+      return fn(selectedModel, effectiveThink, thinkLevel, workload);
     };
   else return <T>(input: T) => fn(input, selectedModel);
 }
@@ -220,57 +214,56 @@ class AiText {
   private think?: boolean;
   private thinkLevel?: 0 | 1 | 2 | 3;
   private preset?: TextPreset;
-  constructor(AiType: AiType | `${string}:${string}`, think?: boolean, thinkLevel?: 0 | 1 | 2 | 3) {
+  private workload: "interactive" | "background";
+  constructor(
+    AiType: AiType | `${string}:${string}`,
+    think?: boolean,
+    thinkLevel?: 0 | 1 | 2 | 3,
+    workload: "interactive" | "background" = "interactive",
+  ) {
     this.AiType = AiType;
     this.think = think;
     this.thinkLevel = thinkLevel;
     this.preset = AiTypeValues.includes(AiType as AiType) ? textPresets[AiType as AiType] : undefined;
+    this.workload = workload;
   }
-  private async resolveModel(middleware?: any | any[]) {
+  private async resolveRuntime(middleware?: any | any[]) {
     const switchAiDevTool = await u.db("o_setting").where("key", "switchAiDevTool").first();
-    const modelName = await resolveModelName(this.AiType);
+    const config = AiTypeValues.includes(this.AiType as AiType) ? await resolveAgentModelConfig(this.AiType as AiType) : null;
+    const modelName = (config?.modelName ?? this.AiType) as `${string}:${string}`;
     const sdkFn = await getVendorTemplateFn("textRequest", modelName);
-    const baseModel = await sdkFn(this.preset?.think ?? this.think, this.preset?.thinkLevel ?? this.thinkLevel ?? 0);
+    const baseModel = await sdkFn(this.preset?.think ?? this.think, this.preset?.thinkLevel ?? this.thinkLevel ?? 0, this.workload);
     const mws = [
       ...(switchAiDevTool?.value === "1" ? [devToolsMiddleware()] : []),
       ...(middleware ? (Array.isArray(middleware) ? middleware : [middleware]) : []),
     ];
-    return mws.length > 0 ? wrapLanguageModel({ model: baseModel, middleware: mws.length === 1 ? mws[0] : mws }) : baseModel;
+    const model = mws.length > 0 ? wrapLanguageModel({ model: baseModel, middleware: mws.length === 1 ? mws[0] : mws }) : baseModel;
+    return { model, config };
   }
   async invoke(input: Omit<Parameters<typeof generateText>[0], "model">) {
-    const config = await getModelConfig(this.AiType);
+    const { model, config } = await this.resolveRuntime();
     const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config?.maxOutputTokens);
-    const inputEstimate = Math.ceil(JSON.stringify({ prompt: input.prompt, system: input.system, messages: input.messages, tools: input.tools }).length / 4);
-    const ctxLimit = 63000;
-    const effectiveMaxOutput = Math.min(maxOutputTokens, ctxLimit - inputEstimate);
-    if (effectiveMaxOutput < 1024) {
-      throw new Error(`输入过长(~${inputEstimate} tokens)，剩余空间不足以生成有效输出`);
-    }
 
     return generateText({
       ...(input.tools && { stopWhen: stepCountIs(AGENT_MAX_STEPS[this.AiType.split(":")[1] ?? ""] ?? DEFAULT_MAX_STEPS) }),
       ...input,
-      model: await this.resolveModel(),
+      model,
       ...(config?.temperature && { temperature: config.temperature }),
-      maxOutputTokens: effectiveMaxOutput,
+      maxOutputTokens,
+      prepareStep: async ({ messages }) => ({ messages: compactStepMessages(messages, stepInputBudget(maxOutputTokens)) }),
     } as Parameters<typeof generateText>[0]);
   }
   async stream(input: Omit<Parameters<typeof streamText>[0], "model">) {
-    const config = await getModelConfig(this.AiType);
+    const { model, config } = await this.resolveRuntime(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" }));
     const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config?.maxOutputTokens);
-    const inputEstimate = Math.ceil(JSON.stringify({ prompt: input.prompt, system: input.system, messages: input.messages, tools: input.tools }).length / 4);
-    const ctxLimit = 63000;
-    const effectiveMaxOutput = Math.min(maxOutputTokens, ctxLimit - inputEstimate);
-    if (effectiveMaxOutput < 1024) {
-      throw new Error(`输入过长(~${inputEstimate} tokens)，剩余空间不足以生成有效输出`);
-    }
 
     return streamText({
       ...(input.tools && { stopWhen: stepCountIs(AGENT_MAX_STEPS[this.AiType.split(":")[1] ?? ""] ?? DEFAULT_MAX_STEPS) }),
       ...input,
-      model: await this.resolveModel(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" })),
+      model,
       ...(config?.temperature && { temperature: config.temperature }),
-      maxOutputTokens: effectiveMaxOutput,
+      maxOutputTokens,
+      prepareStep: async ({ messages }) => ({ messages: compactStepMessages(messages, stepInputBudget(maxOutputTokens)) }),
     } as Parameters<typeof streamText>[0]);
   }
 }
@@ -453,7 +446,12 @@ class AiAudio {
 }
 
 export default {
-  Text: (AiType: AiType | `${string}:${string}`, think?: boolean, thinkLevel?: 0 | 1 | 2 | 3) => new AiText(AiType, think, thinkLevel),
+  Text: (
+    AiType: AiType | `${string}:${string}`,
+    think?: boolean,
+    thinkLevel?: 0 | 1 | 2 | 3,
+    workload?: "interactive" | "background",
+  ) => new AiText(AiType, think, thinkLevel, workload),
   Image: (key: `${string}:${string}`) => new AiImage(key),
   Video: (key: `${string}:${string}`) => new AiVideo(key),
   Audio: (key: `${string}:${string}`) => new AiAudio(key),

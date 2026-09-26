@@ -228851,13 +228851,13 @@ async function convertToLanguageModelPrompt({
       combinedMessages.push(message);
     }
   }
-  const toolCallIds = /* @__PURE__ */ new Set();
+  const toolCallIds2 = /* @__PURE__ */ new Set();
   for (const message of combinedMessages) {
     switch (message.role) {
       case "assistant": {
         for (const content of message.content) {
           if (content.type === "tool-call" && !content.providerExecuted) {
-            toolCallIds.add(content.toolCallId);
+            toolCallIds2.add(content.toolCallId);
           }
         }
         break;
@@ -228865,7 +228865,7 @@ async function convertToLanguageModelPrompt({
       case "tool": {
         for (const content of message.content) {
           if (content.type === "tool-result") {
-            toolCallIds.delete(content.toolCallId);
+            toolCallIds2.delete(content.toolCallId);
           }
         }
         break;
@@ -228873,21 +228873,21 @@ async function convertToLanguageModelPrompt({
       case "user":
       case "system":
         for (const id of approvedToolCallIds) {
-          toolCallIds.delete(id);
+          toolCallIds2.delete(id);
         }
-        if (toolCallIds.size > 0) {
+        if (toolCallIds2.size > 0) {
           throw new MissingToolResultsError({
-            toolCallIds: Array.from(toolCallIds)
+            toolCallIds: Array.from(toolCallIds2)
           });
         }
         break;
     }
   }
   for (const id of approvedToolCallIds) {
-    toolCallIds.delete(id);
+    toolCallIds2.delete(id);
   }
-  if (toolCallIds.size > 0) {
-    throw new MissingToolResultsError({ toolCallIds: Array.from(toolCallIds) });
+  if (toolCallIds2.size > 0) {
+    throw new MissingToolResultsError({ toolCallIds: Array.from(toolCallIds2) });
   }
   return combinedMessages.filter(
     // Filter out empty tool messages (e.g. if they only contained
@@ -233173,15 +233173,15 @@ var init_dist22 = __esm({
     marker66 = `vercel.ai.error.${name66}`;
     symbol66 = Symbol.for(marker66);
     MissingToolResultsError = class extends AISDKError {
-      constructor({ toolCallIds }) {
+      constructor({ toolCallIds: toolCallIds2 }) {
         super({
           name: name66,
-          message: `Tool result${toolCallIds.length > 1 ? "s are" : " is"} missing for tool call${toolCallIds.length > 1 ? "s" : ""} ${toolCallIds.join(
+          message: `Tool result${toolCallIds2.length > 1 ? "s are" : " is"} missing for tool call${toolCallIds2.length > 1 ? "s" : ""} ${toolCallIds2.join(
             ", "
           )}.`
         });
         this[_a66] = true;
-        this.toolCallIds = toolCallIds;
+        this.toolCallIds = toolCallIds2;
       }
       static isInstance(error73) {
         return AISDKError.hasMarker(error73, marker66);
@@ -236807,6 +236807,59 @@ var init_storyboardPrompt = __esm({
   }
 });
 
+// src/utils/aiContext.ts
+function estimateTokens(value) {
+  return Math.ceil(Buffer.byteLength(JSON.stringify(value), "utf8") / 3);
+}
+function toolCallIds(message) {
+  if (message?.role !== "assistant" || !Array.isArray(message.content)) return [];
+  return message.content.filter((part) => part?.type === "tool-call" || part?.type === "tool_use").map((part) => String(part.toolCallId ?? part.tool_use_id ?? part.id ?? "")).filter(Boolean);
+}
+function toolResultIds(message) {
+  if (message?.role !== "tool" || !Array.isArray(message.content)) return [];
+  return message.content.filter((part) => part?.type === "tool-result" || part?.type === "tool_result").map((part) => String(part.toolCallId ?? part.tool_use_id ?? part.id ?? "")).filter(Boolean);
+}
+function completedToolRounds(messages) {
+  const rounds = [];
+  for (let start = 0; start < messages.length; start++) {
+    const calls = toolCallIds(messages[start]);
+    if (calls.length === 0) continue;
+    const found = /* @__PURE__ */ new Set();
+    let end = start;
+    while (end + 1 < messages.length && messages[end + 1]?.role === "tool") {
+      end++;
+      for (const id of toolResultIds(messages[end])) found.add(id);
+    }
+    if (calls.every((id) => found.has(id))) rounds.push({ start, end });
+    start = end;
+  }
+  return rounds;
+}
+function compactStepMessages(messages, maxInputTokens) {
+  if (estimateTokens(messages) <= maxInputTokens) return messages;
+  const rounds = completedToolRounds(messages);
+  const latest = rounds.at(-1);
+  const removable = rounds.filter((round) => round !== latest);
+  const removed = /* @__PURE__ */ new Set();
+  for (const round of removable) {
+    for (let index = round.start; index <= round.end; index++) removed.add(index);
+    const compacted = messages.filter((_, index) => !removed.has(index));
+    if (estimateTokens(compacted) <= maxInputTokens) return compacted;
+  }
+  throw new Error(`Agent \u4E0A\u4E0B\u6587\u8FC7\u957F\uFF08\u4FDD\u5B88\u4F30\u7B97 ${estimateTokens(messages)} tokens\uFF09\uFF0C\u65E0\u6CD5\u5728\u4FDD\u7559\u7CFB\u7EDF\u6307\u4EE4\u3001\u539F\u59CB\u76EE\u6807\u548C\u6700\u8FD1\u5B8C\u6574\u5DE5\u5177\u8F6E\u6B21\u7684\u524D\u63D0\u4E0B\u7EE7\u7EED`);
+}
+function stepInputBudget(maxOutputTokens) {
+  return DEFAULT_CONTEXT_TOKENS - GATEWAY_RESERVE_TOKENS - maxOutputTokens;
+}
+var DEFAULT_CONTEXT_TOKENS, GATEWAY_RESERVE_TOKENS;
+var init_aiContext = __esm({
+  "src/utils/aiContext.ts"() {
+    "use strict";
+    DEFAULT_CONTEXT_TOKENS = 65536;
+    GATEWAY_RESERVE_TOKENS = 2048;
+  }
+});
+
 // src/utils/ai.ts
 function resolveMaxOutputTokens(aiType, configured) {
   if (configured && configured > 0) return configured;
@@ -236860,12 +236913,6 @@ async function resolveModelName(value) {
   }
   return value;
 }
-async function getModelConfig(value) {
-  if (AiTypeValues.includes(value)) {
-    return resolveAgentModelConfig(value);
-  }
-  return null;
-}
 async function getVendorTemplateFn(fnName, modelName) {
   const [id, name28] = modelName.split(/:(.+)/);
   const vendorConfigData = await utils_default.db("o_vendorConfig").where("id", id).first();
@@ -236881,9 +236928,9 @@ async function getVendorTemplateFn(fnName, modelName) {
   const fn = running[fnName];
   if (!fn) throw new Error(`\u672A\u627E\u5230\u4F9B\u5E94\u5546\u914D\u7F6E\u4E2D\u7684\u51FD\u6570 ${fnName} id=${id}`);
   if (fnName == "textRequest")
-    return (think, thinkLevel = 0) => {
+    return (think, thinkLevel = 0, workload = "interactive") => {
       const effectiveThink = think ?? !!selectedModel.think;
-      return fn(selectedModel, effectiveThink, thinkLevel);
+      return fn(selectedModel, effectiveThink, thinkLevel, workload);
     };
   else return (input) => fn(input, selectedModel);
 }
@@ -236965,6 +237012,7 @@ var init_ai = __esm({
     import_sharp2 = __toESM(require("sharp"));
     init_utils3();
     init_storyboardPrompt();
+    init_aiContext();
     AGENT_MAX_STEPS = {
       decisionAgent: 12,
       directorPlanAgent: 12,
@@ -237020,55 +237068,49 @@ var init_ai = __esm({
       think;
       thinkLevel;
       preset;
-      constructor(AiType, think, thinkLevel) {
+      workload;
+      constructor(AiType, think, thinkLevel, workload = "interactive") {
         this.AiType = AiType;
         this.think = think;
         this.thinkLevel = thinkLevel;
         this.preset = AiTypeValues.includes(AiType) ? textPresets[AiType] : void 0;
+        this.workload = workload;
       }
-      async resolveModel(middleware) {
+      async resolveRuntime(middleware) {
         const switchAiDevTool = await utils_default.db("o_setting").where("key", "switchAiDevTool").first();
-        const modelName = await resolveModelName(this.AiType);
+        const config3 = AiTypeValues.includes(this.AiType) ? await resolveAgentModelConfig(this.AiType) : null;
+        const modelName = config3?.modelName ?? this.AiType;
         const sdkFn = await getVendorTemplateFn("textRequest", modelName);
-        const baseModel = await sdkFn(this.preset?.think ?? this.think, this.preset?.thinkLevel ?? this.thinkLevel ?? 0);
+        const baseModel = await sdkFn(this.preset?.think ?? this.think, this.preset?.thinkLevel ?? this.thinkLevel ?? 0, this.workload);
         const mws = [
           ...switchAiDevTool?.value === "1" ? [devToolsMiddleware()] : [],
           ...middleware ? Array.isArray(middleware) ? middleware : [middleware] : []
         ];
-        return mws.length > 0 ? wrapLanguageModel({ model: baseModel, middleware: mws.length === 1 ? mws[0] : mws }) : baseModel;
+        const model = mws.length > 0 ? wrapLanguageModel({ model: baseModel, middleware: mws.length === 1 ? mws[0] : mws }) : baseModel;
+        return { model, config: config3 };
       }
       async invoke(input) {
-        const config3 = await getModelConfig(this.AiType);
+        const { model, config: config3 } = await this.resolveRuntime();
         const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config3?.maxOutputTokens);
-        const inputEstimate = Math.ceil(JSON.stringify({ prompt: input.prompt, system: input.system, messages: input.messages, tools: input.tools }).length / 4);
-        const ctxLimit = 63e3;
-        const effectiveMaxOutput = Math.min(maxOutputTokens, ctxLimit - inputEstimate);
-        if (effectiveMaxOutput < 1024) {
-          throw new Error(`\u8F93\u5165\u8FC7\u957F(~${inputEstimate} tokens)\uFF0C\u5269\u4F59\u7A7A\u95F4\u4E0D\u8DB3\u4EE5\u751F\u6210\u6709\u6548\u8F93\u51FA`);
-        }
         return generateText({
           ...input.tools && { stopWhen: stepCountIs(AGENT_MAX_STEPS[this.AiType.split(":")[1] ?? ""] ?? DEFAULT_MAX_STEPS) },
           ...input,
-          model: await this.resolveModel(),
+          model,
           ...config3?.temperature && { temperature: config3.temperature },
-          maxOutputTokens: effectiveMaxOutput
+          maxOutputTokens,
+          prepareStep: async ({ messages }) => ({ messages: compactStepMessages(messages, stepInputBudget(maxOutputTokens)) })
         });
       }
       async stream(input) {
-        const config3 = await getModelConfig(this.AiType);
+        const { model, config: config3 } = await this.resolveRuntime(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" }));
         const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config3?.maxOutputTokens);
-        const inputEstimate = Math.ceil(JSON.stringify({ prompt: input.prompt, system: input.system, messages: input.messages, tools: input.tools }).length / 4);
-        const ctxLimit = 63e3;
-        const effectiveMaxOutput = Math.min(maxOutputTokens, ctxLimit - inputEstimate);
-        if (effectiveMaxOutput < 1024) {
-          throw new Error(`\u8F93\u5165\u8FC7\u957F(~${inputEstimate} tokens)\uFF0C\u5269\u4F59\u7A7A\u95F4\u4E0D\u8DB3\u4EE5\u751F\u6210\u6709\u6548\u8F93\u51FA`);
-        }
         return streamText({
           ...input.tools && { stopWhen: stepCountIs(AGENT_MAX_STEPS[this.AiType.split(":")[1] ?? ""] ?? DEFAULT_MAX_STEPS) },
           ...input,
-          model: await this.resolveModel(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" })),
+          model,
           ...config3?.temperature && { temperature: config3.temperature },
-          maxOutputTokens: effectiveMaxOutput
+          maxOutputTokens,
+          prepareStep: async ({ messages }) => ({ messages: compactStepMessages(messages, stepInputBudget(maxOutputTokens)) })
         });
       }
     };
@@ -237163,7 +237205,7 @@ var init_ai = __esm({
       }
     };
     ai_default = {
-      Text: (AiType, think, thinkLevel) => new AiText(AiType, think, thinkLevel),
+      Text: (AiType, think, thinkLevel, workload) => new AiText(AiType, think, thinkLevel, workload),
       Image: (key) => new AiImage(key),
       Video: (key) => new AiVideo(key),
       Audio: (key) => new AiAudio(key)
@@ -256741,6 +256783,81 @@ init_utils3();
 init_dist_node();
 init_dist22();
 init_zod();
+
+// src/utils/agent/scheduler.ts
+var workListeners = /* @__PURE__ */ new Set();
+function onAgentWork(listener) {
+  workListeners.add(listener);
+  return () => workListeners.delete(listener);
+}
+var AgentRunScheduler = class {
+  constructor(maxActive = 2, maxQueued = 4) {
+    this.maxActive = maxActive;
+    this.maxQueued = maxQueued;
+  }
+  active = 0;
+  activeProjects = /* @__PURE__ */ new Set();
+  queue = [];
+  run(projectKey, signal, run) {
+    if (signal?.aborted) return Promise.reject(this.abortError());
+    if (this.queue.length >= this.maxQueued && (this.active >= this.maxActive || this.activeProjects.has(projectKey))) {
+      return Promise.reject(new Error("\u5F53\u524D\u5DF2\u6709 6 \u4E2A\u521B\u4F5C\u4EFB\u52A1\uFF0C\u6392\u961F\u5DF2\u6EE1\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5"));
+    }
+    for (const listener of workListeners) listener();
+    return new Promise((resolve3, reject) => {
+      const job = { projectKey, signal, run, resolve: resolve3, reject };
+      job.onAbort = () => {
+        const index = this.queue.indexOf(job);
+        if (index >= 0) {
+          this.queue.splice(index, 1);
+          reject(this.abortError());
+          this.drain();
+        }
+      };
+      signal?.addEventListener("abort", job.onAbort, { once: true });
+      this.queue.push(job);
+      this.drain();
+    });
+  }
+  hasWork() {
+    return this.active > 0 || this.queue.length > 0;
+  }
+  drain() {
+    while (this.active < this.maxActive) {
+      const index = this.queue.findIndex((job2) => !this.activeProjects.has(job2.projectKey));
+      if (index < 0) return;
+      const [job] = this.queue.splice(index, 1);
+      job.signal?.removeEventListener("abort", job.onAbort);
+      if (job.signal?.aborted) {
+        job.reject(this.abortError());
+        continue;
+      }
+      this.active++;
+      this.activeProjects.add(job.projectKey);
+      const finish = () => {
+        this.active--;
+        this.activeProjects.delete(job.projectKey);
+        this.drain();
+      };
+      void job.run().then(
+        (value) => {
+          finish();
+          job.resolve(value);
+        },
+        (error73) => {
+          finish();
+          job.reject(error73);
+        }
+      );
+    }
+  }
+  abortError() {
+    return new DOMException("Agent run cancelled", "AbortError");
+  }
+};
+var agentRunScheduler = new AgentRunScheduler();
+
+// src/utils/agent/memory.ts
 var DEFAULTS = {
   messagesPerSummary: 3,
   // 每累积多少条message触发一次summary生成
@@ -256774,20 +256891,97 @@ async function getEmbedding2(text2) {
   return embedding.getEmbedding(text2);
 }
 var Memory = class _Memory {
-  static summaryJobs = /* @__PURE__ */ new Set();
+  static summaryQueue = /* @__PURE__ */ new Map();
+  static summaryRunning = false;
+  static activeSummaryAbort = null;
   agentType;
   isolationKey;
   constructor(agentType, isolationKey) {
     this.agentType = agentType;
     this.isolationKey = isolationKey;
   }
-  async generateSummary(contents) {
+  static interruptSummary() {
+    _Memory.activeSummaryAbort?.abort();
+  }
+  async generateSummary(contents, abortSignal) {
     const { summaryMaxLength } = await this.getConfigData({ summaryMaxLength: DEFAULTS.summaryMaxLength });
-    const { text: text2 } = await utils_default.Ai.Text(this.agentType).invoke({
+    const { text: text2 } = await utils_default.Ai.Text(this.agentType, void 0, void 0, "background").invoke({
       system: `\u4F60\u662F\u4E00\u4E2A\u8BB0\u5FC6\u538B\u7F29\u52A9\u624B\u3002\u8BF7\u5C06\u4EE5\u4E0B\u591A\u6761\u8BB0\u5FC6\u5185\u5BB9\u538B\u7F29\u4E3A\u4E00\u6BB5\u7B80\u6D01\u7684\u6458\u8981\uFF0C\u4E0D\u8D85\u8FC7${summaryMaxLength}\u4E2A\u5B57\u7B26\u3002\u53EA\u8F93\u51FA\u6458\u8981\u5185\u5BB9\uFF0C\u4E0D\u8981\u52A0\u4EFB\u4F55\u524D\u7F00\u6216\u89E3\u91CA\u3002`,
-      messages: [{ role: "user", content: contents.map((c, i) => `${i + 1}. ${c}`).join("\n") }]
+      messages: [{ role: "user", content: contents.map((c, i) => `${i + 1}. ${c}`).join("\n") }],
+      abortSignal
     });
     return text2.slice(0, Number(summaryMaxLength));
+  }
+  static enqueueSummary(memory) {
+    _Memory.summaryQueue.set(memory.isolationKey, memory);
+    void _Memory.drainSummaryQueue();
+  }
+  static async drainSummaryQueue() {
+    if (_Memory.summaryRunning) return;
+    if (agentRunScheduler.hasWork()) {
+      setTimeout(() => void _Memory.drainSummaryQueue(), 1e3);
+      return;
+    }
+    _Memory.summaryRunning = true;
+    try {
+      while (_Memory.summaryQueue.size > 0) {
+        if (agentRunScheduler.hasWork()) {
+          return;
+        }
+        const entry = _Memory.summaryQueue.entries().next().value;
+        if (!entry) break;
+        const [isolationKey, memory] = entry;
+        _Memory.summaryQueue.delete(isolationKey);
+        try {
+          if (await memory.summarizeOneBatch()) _Memory.summaryQueue.set(isolationKey, memory);
+        } catch (error73) {
+          const message = utils_default.error(error73).message;
+          if (error73?.name === "AbortError" || /429|busy|繁忙|too many/i.test(message)) {
+            setTimeout(() => _Memory.enqueueSummary(memory), 5e3);
+          } else {
+            console.error("[memory] summary failed:", message);
+          }
+        }
+      }
+    } finally {
+      _Memory.summaryRunning = false;
+      if (_Memory.summaryQueue.size > 0) void _Memory.drainSummaryQueue();
+    }
+  }
+  async summarizeOneBatch() {
+    const { messagesPerSummary, embeddingEnabled } = await this.getConfigData({
+      messagesPerSummary: DEFAULTS.messagesPerSummary,
+      embeddingEnabled: DEFAULTS.embeddingEnabled
+    });
+    const batchSize = Number(messagesPerSummary);
+    const batch = await utils_default.db("memories").where({ isolationKey: this.isolationKey, type: "message", summarized: 0 }).orderBy("createTime", "asc").limit(batchSize);
+    if (batch.length < batchSize) return false;
+    const batchIds = batch.map((message) => message.id);
+    const controller = new AbortController();
+    _Memory.activeSummaryAbort = controller;
+    let summaryContent;
+    try {
+      summaryContent = await this.generateSummary(
+        batch.map((message) => message.content),
+        controller.signal
+      );
+    } finally {
+      if (_Memory.activeSummaryAbort === controller) _Memory.activeSummaryAbort = null;
+    }
+    const summaryEmbedding = Number(embeddingEnabled) === 1 ? await getEmbedding2(summaryContent) : null;
+    await utils_default.db("memories").insert({
+      id: v4_default(),
+      isolationKey: this.isolationKey,
+      type: "summary",
+      content: summaryContent,
+      embedding: summaryEmbedding ? JSON.stringify(summaryEmbedding) : null,
+      relatedMessageIds: JSON.stringify(batchIds),
+      summarized: 0,
+      createTime: Date.now()
+    });
+    await utils_default.db("memories").whereIn("id", batchIds).update({ summarized: 1 });
+    const remaining = await utils_default.db("memories").where({ isolationKey: this.isolationKey, type: "message", summarized: 0 }).count({ count: "*" }).first();
+    return Number(remaining?.count ?? 0) >= batchSize;
   }
   async judgeSummaryRelevance(keyword, summaries) {
     const list2 = summaries.map((s) => `[${s.id}] ${s.content}`).join("\n");
@@ -256841,35 +257035,7 @@ ${list2}` }]
       summarized: 0,
       createTime: options?.createTime ?? Date.now()
     });
-    const unsummarized = await utils_default.db("memories").where({ isolationKey, type: "message", summarized: 0 }).orderBy("createTime", "asc");
-    if (unsummarized.length >= Number(messagesPerSummary) && !_Memory.summaryJobs.has(isolationKey)) {
-      const batch = unsummarized.slice(0, Number(messagesPerSummary));
-      const batchIds = batch.map((m) => m.id);
-      const batchContents = batch.map((m) => m.content);
-      _Memory.summaryJobs.add(isolationKey);
-      void (async () => {
-        try {
-          const summaryContent = await this.generateSummary(batchContents);
-          const summaryEmbedding = Number(embeddingEnabled) === 1 ? await getEmbedding2(summaryContent) : null;
-          const summaryId = v4_default();
-          await utils_default.db("memories").insert({
-            id: summaryId,
-            isolationKey,
-            type: "summary",
-            content: summaryContent,
-            embedding: summaryEmbedding ? JSON.stringify(summaryEmbedding) : null,
-            relatedMessageIds: JSON.stringify(batchIds),
-            summarized: 0,
-            createTime: Date.now()
-          });
-          await utils_default.db("memories").whereIn("id", batchIds).update({ summarized: 1 });
-        } catch (error73) {
-          console.error("[memory] summary failed:", error73);
-        } finally {
-          _Memory.summaryJobs.delete(isolationKey);
-        }
-      })();
-    }
+    if (Number(messagesPerSummary) > 0) _Memory.enqueueSummary(this);
   }
   async get(text2) {
     const { shortTermLimit, summaryLimit, ragLimit, embeddingEnabled } = await this.getConfigData({
@@ -256938,6 +257104,7 @@ ${list2}` }]
     };
   }
 };
+onAgentWork(() => Memory.interruptSummary());
 var memory_default = Memory;
 
 // src/utils/agent/skillsTools.ts
@@ -257698,6 +257865,13 @@ async function consumeFullStream(fullStream, initialMsg, syncMsg) {
         break;
       }
     }
+    if (syncMsg) {
+      const newMsg = syncMsg();
+      if (newMsg !== msg) {
+        msg = newMsg;
+        text2 = msg.text();
+      }
+    }
     text2.complete();
     msg.complete();
   } catch (err) {
@@ -258410,8 +258584,13 @@ var productionAgent_default = (nsp) => {
       scriptId: socket.handshake.auth.scriptId
     });
     let abortController = null;
+    let currentRun = null;
     const thinkConfig = {};
-    socket.on("updateContext", (data, callback) => {
+    socket.on("updateContext", async (data, callback) => {
+      abortController?.abort();
+      await currentRun?.catch(() => void 0);
+      abortController = null;
+      currentRun = null;
       isolationKey = data.isolationKey;
       resTool = new resTool_default(socket, {
         projectId: data.projectId,
@@ -258425,6 +258604,7 @@ var productionAgent_default = (nsp) => {
       abortController?.abort();
       abortController = new AbortController();
       const currentController = abortController;
+      const projectKey = String(resTool.data.projectId);
       const msg = resTool.newMessage("assistant", "\u89C6\u9891\u7B56\u5212");
       const ctx = {
         socket,
@@ -258437,14 +258617,19 @@ var productionAgent_default = (nsp) => {
         thinkConfig
       };
       try {
-        await runDecisionAI(ctx);
+        currentRun = agentRunScheduler.run(projectKey, currentController.signal, () => runDecisionAI(ctx));
+        await currentRun;
       } catch (err) {
-        if (err.name !== "AbortError" && !currentController.signal.aborted) {
+        if (err.name === "AbortError" || currentController.signal.aborted) {
+          msg.complete();
+        } else {
           console.error("[productionAgent] chat error:", utils_default.error(err).message);
+          msg.error(utils_default.error(err).message);
         }
       } finally {
         if (abortController === currentController) {
           abortController = null;
+          currentRun = null;
         }
       }
     });
@@ -258457,9 +258642,11 @@ var productionAgent_default = (nsp) => {
       abortController?.abort();
       abortController = null;
     });
-  });
-  nsp.on("disconnect", (socket) => {
-    console.log("[productionAgent] \u5DF2\u65AD\u5F00\u8FDE\u63A5:", socket.id);
+    socket.on("disconnect", () => {
+      abortController?.abort();
+      abortController = null;
+      console.log("[productionAgent] \u5DF2\u65AD\u5F00\u8FDE\u63A5:", socket.id);
+    });
   });
 };
 
@@ -258785,6 +258972,13 @@ async function consumeFullStream2(fullStream, initialMsg, syncMsg) {
         throw chunk.error;
       }
     }
+    if (syncMsg) {
+      const newMsg = syncMsg();
+      if (newMsg !== msg) {
+        msg = newMsg;
+        text2 = msg.text();
+      }
+    }
     text2.complete();
     msg.complete();
   } catch (err) {
@@ -258837,12 +259031,14 @@ var scriptAgent_default = (nsp) => {
       projectId: socket.handshake.auth.projectId
     });
     let abortController = null;
+    let currentRun = null;
     const thinkConfig = {};
     socket.on("chat", async (data) => {
       const { content } = data;
       abortController?.abort();
       abortController = new AbortController();
       const currentController = abortController;
+      const projectKey = String(resTool.data.projectId);
       const msg = resTool.newMessage("assistant", "\u7EDF\u7B79");
       const ctx = {
         socket,
@@ -258855,15 +259051,19 @@ var scriptAgent_default = (nsp) => {
         thinkConfig
       };
       try {
-        await runDecisionAI2(ctx);
+        currentRun = agentRunScheduler.run(projectKey, currentController.signal, () => runDecisionAI2(ctx));
+        await currentRun;
       } catch (err) {
-        if (err.name !== "AbortError" && !currentController.signal.aborted) {
+        if (err.name === "AbortError" || currentController.signal.aborted) {
+          msg.complete();
+        } else {
           console.error("[scriptAgent] chat error:", utils_default.error(err).message);
           msg.error(utils_default.error(err).message);
         }
       } finally {
         if (abortController === currentController) {
           abortController = null;
+          currentRun = null;
         }
       }
     });
@@ -258876,9 +259076,11 @@ var scriptAgent_default = (nsp) => {
       abortController?.abort();
       abortController = null;
     });
-  });
-  nsp.on("disconnect", (socket) => {
-    console.log("[scriptAgent] \u5DF2\u65AD\u5F00\u8FDE\u63A5:", socket.id);
+    socket.on("disconnect", () => {
+      abortController?.abort();
+      abortController = null;
+      console.log("[scriptAgent] \u5DF2\u65AD\u5F00\u8FDE\u63A5:", socket.id);
+    });
   });
 };
 

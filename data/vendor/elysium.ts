@@ -49,7 +49,7 @@ const failure = (prefix, error) => {
   return new Error(`${prefix}: ${message}`);
 };
 
-const textRequest = (model, think, thinkLevel = 0) => {
+const textRequest = (model, think, thinkLevel = 0, workload = "interactive") => {
   const { baseUrl, headers } = settings();
   const effortMap = { 0: "low", 1: "low", 2: "medium", 3: "xhigh" };
   const sampling = think
@@ -71,6 +71,7 @@ const textRequest = (model, think, thinkLevel = 0) => {
       };
       return fetch(url, {
         ...options,
+        headers: { ...(options?.headers || {}), "X-Elysium-Workload": workload },
         body: JSON.stringify({ ...rawBody, ...sampling, chat_template_kwargs: chatTemplateKwargs }),
       });
     },

@@ -270,6 +270,13 @@ async function consumeFullStream(
         throw chunk.error;
       }
     }
+    if (syncMsg) {
+      const newMsg = syncMsg();
+      if (newMsg !== msg) {
+        msg = newMsg;
+        text = msg.text();
+      }
+    }
     text.complete();
     msg.complete();
   } catch (err: any) {
