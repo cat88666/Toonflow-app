@@ -24,6 +24,29 @@ type AiType =
   | "productionAgent:storyboardPanelAgent"
   | "productionAgent:storyboardTableAgent";
 
+type TextPreset = {
+  think: boolean;
+  thinkLevel: 0 | 1 | 2 | 3;
+  maxOutputTokens: number;
+};
+
+const textPresets: Partial<Record<AiType, TextPreset>> = {
+  "scriptAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+  "scriptAgent:storySkeletonAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+  "scriptAgent:adaptationStrategyAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+  "productionAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+  "productionAgent:directorPlanAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+  "scriptAgent:scriptAgent": { think: false, thinkLevel: 3, maxOutputTokens: 32768 },
+  "scriptAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 16384 },
+  "productionAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 16384 },
+  "productionAgent:deriveAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+  "productionAgent:generateAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+  "productionAgent:storyboardGenAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+  "productionAgent:storyboardPanelAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+  "productionAgent:storyboardTableAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+  universalAi: { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+};
+
 type FnName = "textRequest" | "imageRequest" | "videoRequest" | "ttsRequest";
 
 const AiTypeValues: AiType[] = [
@@ -50,6 +73,8 @@ const CONTROL_AGENT_MAX_OUTPUT_TOKENS = 1024;
 
 export function resolveMaxOutputTokens(aiType: AiType | `${string}:${string}`, configured?: number | null) {
   if (configured && configured > 0) return configured;
+  const preset = AiTypeValues.includes(aiType as AiType) ? textPresets[aiType as AiType] : undefined;
+  if (preset) return preset.maxOutputTokens;
   if (aiType.endsWith(":decisionAgent") || aiType.endsWith(":supervisionAgent")) return CONTROL_AGENT_MAX_OUTPUT_TOKENS;
   return DEFAULT_MAX_OUTPUT_TOKENS;
 }
@@ -178,17 +203,19 @@ async function urlToBase64(url: string, retries = 3, delay = 1000): Promise<stri
 class AiText {
   private AiType: AiType | `${string}:${string}`;
   private think?: boolean;
-  private thinkLevel: 0 | 1 | 2 | 3;
-  constructor(AiType: AiType | `${string}:${string}`, think?: boolean, thinkLevel: 0 | 1 | 2 | 3 = 0) {
+  private thinkLevel?: 0 | 1 | 2 | 3;
+  private preset?: TextPreset;
+  constructor(AiType: AiType | `${string}:${string}`, think?: boolean, thinkLevel?: 0 | 1 | 2 | 3) {
     this.AiType = AiType;
     this.think = think;
     this.thinkLevel = thinkLevel;
+    this.preset = AiTypeValues.includes(AiType as AiType) ? textPresets[AiType as AiType] : undefined;
   }
   private async resolveModel(middleware?: any | any[]) {
     const switchAiDevTool = await u.db("o_setting").where("key", "switchAiDevTool").first();
     const modelName = await resolveModelName(this.AiType);
     const sdkFn = await getVendorTemplateFn("textRequest", modelName);
-    const baseModel = await sdkFn(this.think, this.thinkLevel);
+    const baseModel = await sdkFn(this.think ?? this.preset?.think, this.thinkLevel ?? this.preset?.thinkLevel ?? 0);
     const mws = [
       ...(switchAiDevTool?.value === "1" ? [devToolsMiddleware()] : []),
       ...(middleware ? (Array.isArray(middleware) ? middleware : [middleware]) : []),

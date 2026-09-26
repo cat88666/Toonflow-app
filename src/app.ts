@@ -141,7 +141,7 @@ export default async function startServe(randomPort: Boolean = false) {
   app.use("/assets", express.static(assetsDir, { acceptRanges: false }));
 
   // data/web 静态网站
-  const webDir = u.getPath("web");
+  const webDir = process.env.TOONFLOW_WEB_DIR || u.getPath("web");
   if (fs.existsSync(webDir)) {
     console.log("静态网站目录:", webDir);
     app.use(express.static(webDir, { acceptRanges: false }));

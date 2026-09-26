@@ -17,8 +17,8 @@ export interface AgentContext {
   resTool: ResTool;
   msg: ReturnType<ResTool["newMessage"]>;
   thinkConfig: {
-    think: boolean;
-    thinlLevel: 0 | 1 | 2 | 3;
+    think?: boolean;
+    thinlLevel?: 0 | 1 | 2 | 3;
   };
 }
 

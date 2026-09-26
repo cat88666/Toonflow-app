@@ -40,10 +40,7 @@ export default (nsp: Namespace) => {
     });
     let abortController: AbortController | null = null;
 
-    const thinkConfig: agent.AgentContext["thinkConfig"] = {
-      think: false,
-      thinlLevel: 0,
-    };
+    const thinkConfig: agent.AgentContext["thinkConfig"] = {};
 
     socket.on("chat", async (data: { content: string }) => {
       const { content } = data;

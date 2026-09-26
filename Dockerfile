@@ -12,11 +12,16 @@ COPY . .
 # packages before installing to avoid downloading desktop binaries.
 RUN node -e "const fs=require('fs');const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));for(const section of ['dependencies','devDependencies']){if(!pkg[section]) continue;for(const name of ['custom-electron-titlebar','electron','electron-builder','electron-rebuild','electronmon']) delete pkg[section][name];}fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2)+'\n');" && \
     yarn install --frozen-lockfile && \
+    yarn build && \
+    mkdir -p /app/runtime && \
+    cp data/serve/app.js /app/runtime/app.js && \
+    cp -R data/web /app/runtime/web && \
     yarn cache clean
 
-ENV NODE_ENV=dev
+ENV NODE_ENV=prod
 ENV PORT=10588
+ENV TOONFLOW_WEB_DIR=/app/runtime/web
 
 EXPOSE 10588
 
-CMD ["yarn", "dev"]
+CMD ["node", "/app/runtime/app.js"]

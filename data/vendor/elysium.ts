@@ -49,10 +49,32 @@ const failure = (prefix, error) => {
   return new Error(`${prefix}: ${message}`);
 };
 
-const textRequest = (model, think) => {
+const textRequest = (model, think, thinkLevel = 0) => {
   const { baseUrl, headers } = settings();
-  const extraBody = { chat_template_kwargs: { enable_thinking: think } };
-  return createOpenAI({ baseURL: baseUrl, apiKey: headers.Authorization.slice(7), extraBody }).chat(model.modelName);
+  const effortMap = { 0: "low", 1: "low", 2: "medium", 3: "xhigh" };
+  const sampling = think
+    ? { temperature: 1, top_p: 0.95, top_k: 20, min_p: 0, presence_penalty: 0 }
+    : thinkLevel === 3
+      ? { temperature: 0.8, top_p: 0.9, top_k: 20, min_p: 0, presence_penalty: 0.8 }
+      : { temperature: 0.2, top_p: 0.8, top_k: 20, min_p: 0, presence_penalty: 0 };
+
+  return createOpenAICompatible({
+    name: "elysium",
+    baseURL: baseUrl,
+    apiKey: headers.Authorization.slice(7),
+    fetch: async (url, options) => {
+      const rawBody = JSON.parse(options?.body || "{}");
+      const chatTemplateKwargs = {
+        ...(rawBody.chat_template_kwargs || {}),
+        enable_thinking: !!think,
+        ...(think ? { reasoning_effort: effortMap[thinkLevel] } : {}),
+      };
+      return fetch(url, {
+        ...options,
+        body: JSON.stringify({ ...rawBody, ...sampling, chat_template_kwargs: chatTemplateKwargs }),
+      });
+    },
+  }).chatModel(model.modelName);
 };
 
 const imageRequest = async (config, model) => {

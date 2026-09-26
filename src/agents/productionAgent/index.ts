@@ -19,8 +19,8 @@ export interface AgentContext {
   msg: ReturnType<ResTool["newMessage"]>;
   messages?: { role: "user" | "assistant" | "system"; content: string }[];
   thinkConfig: {
-    think: boolean;
-    thinlLevel: 0 | 1 | 2 | 3;
+    think?: boolean;
+    thinlLevel?: 0 | 1 | 2 | 3;
   };
 }
 

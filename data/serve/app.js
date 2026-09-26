@@ -236810,6 +236810,8 @@ var init_storyboardPrompt = __esm({
 // src/utils/ai.ts
 function resolveMaxOutputTokens(aiType, configured) {
   if (configured && configured > 0) return configured;
+  const preset = AiTypeValues.includes(aiType) ? textPresets[aiType] : void 0;
+  if (preset) return preset.maxOutputTokens;
   if (aiType.endsWith(":decisionAgent") || aiType.endsWith(":supervisionAgent")) return CONTROL_AGENT_MAX_OUTPUT_TOKENS;
   return DEFAULT_MAX_OUTPUT_TOKENS;
 }
@@ -236952,7 +236954,7 @@ async function validateImageResult(result, promptValue) {
   if (recentImageResults.size > 100) recentImageResults.delete(recentImageResults.keys().next().value);
   return buffer;
 }
-var import_node_crypto4, import_sharp2, AiTypeValues, DEFAULT_MAX_OUTPUT_TOKENS, CONTROL_AGENT_MAX_OUTPUT_TOKENS, AiText, recentImageResults, AiImage, AiVideo, AiAudio, ai_default;
+var import_node_crypto4, import_sharp2, textPresets, AiTypeValues, DEFAULT_MAX_OUTPUT_TOKENS, CONTROL_AGENT_MAX_OUTPUT_TOKENS, AiText, recentImageResults, AiImage, AiVideo, AiAudio, ai_default;
 var init_ai = __esm({
   "src/utils/ai.ts"() {
     "use strict";
@@ -236963,6 +236965,22 @@ var init_ai = __esm({
     import_sharp2 = __toESM(require("sharp"));
     init_utils3();
     init_storyboardPrompt();
+    textPresets = {
+      "scriptAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+      "scriptAgent:storySkeletonAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+      "scriptAgent:adaptationStrategyAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+      "productionAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+      "productionAgent:directorPlanAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
+      "scriptAgent:scriptAgent": { think: false, thinkLevel: 3, maxOutputTokens: 32768 },
+      "scriptAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 16384 },
+      "productionAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 16384 },
+      "productionAgent:deriveAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+      "productionAgent:generateAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+      "productionAgent:storyboardGenAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+      "productionAgent:storyboardPanelAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+      "productionAgent:storyboardTableAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+      universalAi: { think: false, thinkLevel: 0, maxOutputTokens: 12288 }
+    };
     AiTypeValues = [
       "scriptAgent",
       "productionAgent",
@@ -236987,16 +237005,18 @@ var init_ai = __esm({
       AiType;
       think;
       thinkLevel;
-      constructor(AiType, think, thinkLevel = 0) {
+      preset;
+      constructor(AiType, think, thinkLevel) {
         this.AiType = AiType;
         this.think = think;
         this.thinkLevel = thinkLevel;
+        this.preset = AiTypeValues.includes(AiType) ? textPresets[AiType] : void 0;
       }
       async resolveModel(middleware) {
         const switchAiDevTool = await utils_default.db("o_setting").where("key", "switchAiDevTool").first();
         const modelName = await resolveModelName(this.AiType);
         const sdkFn = await getVendorTemplateFn("textRequest", modelName);
-        const baseModel = await sdkFn(this.think, this.thinkLevel);
+        const baseModel = await sdkFn(this.think ?? this.preset?.think, this.thinkLevel ?? this.preset?.thinkLevel ?? 0);
         const mws = [
           ...switchAiDevTool?.value === "1" ? [devToolsMiddleware()] : [],
           ...middleware ? Array.isArray(middleware) ? middleware : [middleware] : []
@@ -258354,10 +258374,7 @@ var productionAgent_default = (nsp) => {
       scriptId: socket.handshake.auth.scriptId
     });
     let abortController = null;
-    const thinkConfig = {
-      think: false,
-      thinlLevel: 0
-    };
+    const thinkConfig = {};
     socket.on("updateContext", (data, callback) => {
       isolationKey = data.isolationKey;
       resTool = new resTool_default(socket, {
@@ -258784,10 +258801,7 @@ var scriptAgent_default = (nsp) => {
       projectId: socket.handshake.auth.projectId
     });
     let abortController = null;
-    const thinkConfig = {
-      think: false,
-      thinlLevel: 0
-    };
+    const thinkConfig = {};
     socket.on("chat", async (data) => {
       const { content } = data;
       abortController?.abort();
@@ -259002,7 +259016,7 @@ async function startServe(randomPort = false) {
   }
   console.log("\u6587\u4EF6\u76EE\u5F55:", assetsDir);
   app.use("/assets", import_express168.default.static(assetsDir, { acceptRanges: false }));
-  const webDir = utils_default.getPath("web");
+  const webDir = process.env.TOONFLOW_WEB_DIR || utils_default.getPath("web");
   if (import_fs17.default.existsSync(webDir)) {
     console.log("\u9759\u6001\u7F51\u7AD9\u76EE\u5F55:", webDir);
     app.use(import_express168.default.static(webDir, { acceptRanges: false }));

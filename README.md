@@ -45,7 +45,9 @@ docker run -d \
   toonflow
 ```
 
-启动后访问 `http://localhost:10588/web/index.html`。
+启动后访问 `http://localhost:10588/`。
+
+镜像中的服务端程序和前端页面位于只读运行目录，挂载 `/app/data` 只保存数据库、素材和配置，不会再覆盖镜像内的前端版本。
 
 ### 环境变量
 
@@ -148,5 +150,3 @@ src/
 Dockerfile                Docker 构建文件
 electron-builder.yml      Electron 打包配置
 ```
-
-
