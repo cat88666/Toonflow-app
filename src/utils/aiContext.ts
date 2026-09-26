@@ -38,7 +38,18 @@ function completedToolRounds(messages: any[]): { start: number; end: number }[] 
   return rounds;
 }
 
+function assertNoOrphanedToolResults(messages: any[]) {
+  const calls = new Set<string>();
+  for (const message of messages) {
+    for (const id of toolCallIds(message)) calls.add(id);
+    for (const id of toolResultIds(message)) {
+      if (!calls.has(id)) throw new Error(`Agent 上下文包含孤立 tool result: ${id}`);
+    }
+  }
+}
+
 export function compactStepMessages(messages: any[], maxInputTokens: number): any[] {
+  assertNoOrphanedToolResults(messages);
   if (estimateTokens(messages) <= maxInputTokens) return messages;
 
   const rounds = completedToolRounds(messages);
@@ -48,7 +59,10 @@ export function compactStepMessages(messages: any[], maxInputTokens: number): an
   for (const round of removable) {
     for (let index = round.start; index <= round.end; index++) removed.add(index);
     const compacted = messages.filter((_, index) => !removed.has(index));
-    if (estimateTokens(compacted) <= maxInputTokens) return compacted;
+    if (estimateTokens(compacted) <= maxInputTokens) {
+      assertNoOrphanedToolResults(compacted);
+      return compacted;
+    }
   }
 
   throw new Error(`Agent 上下文过长（保守估算 ${estimateTokens(messages)} tokens），无法在保留系统指令、原始目标和最近完整工具轮次的前提下继续`);

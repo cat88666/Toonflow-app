@@ -236835,7 +236835,17 @@ function completedToolRounds(messages) {
   }
   return rounds;
 }
+function assertNoOrphanedToolResults(messages) {
+  const calls = /* @__PURE__ */ new Set();
+  for (const message of messages) {
+    for (const id of toolCallIds(message)) calls.add(id);
+    for (const id of toolResultIds(message)) {
+      if (!calls.has(id)) throw new Error(`Agent \u4E0A\u4E0B\u6587\u5305\u542B\u5B64\u7ACB tool result: ${id}`);
+    }
+  }
+}
 function compactStepMessages(messages, maxInputTokens) {
+  assertNoOrphanedToolResults(messages);
   if (estimateTokens(messages) <= maxInputTokens) return messages;
   const rounds = completedToolRounds(messages);
   const latest = rounds.at(-1);
@@ -236844,7 +236854,10 @@ function compactStepMessages(messages, maxInputTokens) {
   for (const round of removable) {
     for (let index = round.start; index <= round.end; index++) removed.add(index);
     const compacted = messages.filter((_, index) => !removed.has(index));
-    if (estimateTokens(compacted) <= maxInputTokens) return compacted;
+    if (estimateTokens(compacted) <= maxInputTokens) {
+      assertNoOrphanedToolResults(compacted);
+      return compacted;
+    }
   }
   throw new Error(`Agent \u4E0A\u4E0B\u6587\u8FC7\u957F\uFF08\u4FDD\u5B88\u4F30\u7B97 ${estimateTokens(messages)} tokens\uFF09\uFF0C\u65E0\u6CD5\u5728\u4FDD\u7559\u7CFB\u7EDF\u6307\u4EE4\u3001\u539F\u59CB\u76EE\u6807\u548C\u6700\u8FD1\u5B8C\u6574\u5DE5\u5177\u8F6E\u6B21\u7684\u524D\u63D0\u4E0B\u7EE7\u7EED`);
 }

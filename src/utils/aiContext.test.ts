@@ -37,3 +37,7 @@ test("fails instead of orphaning the most recent tool result", () => {
   ];
   assert.throws(() => compactStepMessages(messages, 100), /无法在保留/);
 });
+
+test("rejects an orphaned tool result even when the context is small", () => {
+  assert.throws(() => compactStepMessages([result("missing", "结果")], 1000), /孤立 tool result/);
+});
