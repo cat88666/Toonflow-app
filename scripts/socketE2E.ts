@@ -2,7 +2,7 @@ import jwt from "jsonwebtoken";
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 
-type Options = { namespace: "scriptAgent" | "productionAgent"; prompt: string; output: string; timeoutSeconds: number };
+type Options = { namespace: "scriptAgent" | "productionAgent"; prompt: string; output: string; timeoutSeconds: number; projectId?: number };
 
 function options(): Options {
   const values = process.argv.slice(2);
@@ -14,9 +14,10 @@ function options(): Options {
   const prompt = read("--prompt");
   const output = read("--output");
   if (!namespace || !["scriptAgent", "productionAgent"].includes(namespace) || !prompt || !output) {
-    throw new Error("usage: socketE2E.ts --namespace <scriptAgent|productionAgent> --prompt <text> --output <file> [--timeout 600]");
+    throw new Error("usage: socketE2E.ts --namespace <scriptAgent|productionAgent> --prompt <text> --output <file> [--timeout 600] [--project-id ID]");
   }
-  return { namespace, prompt, output, timeoutSeconds: Number(read("--timeout") ?? 600) };
+  const projectId = read("--project-id");
+  return { namespace, prompt, output, timeoutSeconds: Number(read("--timeout") ?? 600), projectId: projectId ? Number(projectId) : undefined };
 }
 
 async function post(url: string, body: string) {
@@ -28,7 +29,8 @@ async function main() {
   const input = options();
   const query = (sql: string) => execFileSync("sqlite3", ["data/db2.sqlite", sql], { encoding: "utf8" }).trim();
   const tokenKey = query("select value from o_setting where key='tokenKey'");
-  const project = { id: Number(query("select id from o_project order by id limit 1")) };
+  const project = { id: input.projectId ?? Number(query("select id from o_project order by id limit 1")) };
+  if (query(`select count(*) from o_project where id=${project.id}`) !== "1") throw new Error(`project ${project.id} does not exist`);
   const scriptId = query(`select id from o_script where projectId=${project.id} order by id limit 1`);
   const token = jwt.sign({ sub: "socket-e2e" }, tokenKey, { expiresIn: "1h" });
 

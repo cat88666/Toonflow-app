@@ -257622,7 +257622,24 @@ async function runDecisionAI(ctx) {
 async function createSubAgent(parentCtx) {
   const { resTool, abortSignal } = parentCtx;
   const memory = new memory_default("productionAgent", parentCtx.isolationKey);
-  async function runAgent({
+  let subAgentTail = Promise.resolve();
+  async function runAgent(options) {
+    const previous = subAgentTail;
+    let release;
+    subAgentTail = new Promise((resolve3) => {
+      release = resolve3;
+    });
+    await previous;
+    try {
+      await options.beforeRun?.();
+      const result = await runAgentNow(options);
+      await options.afterRun?.();
+      return result;
+    } finally {
+      release();
+    }
+  }
+  async function runAgentNow({
     key,
     prompt,
     system,
@@ -257648,6 +257665,12 @@ async function createSubAgent(parentCtx) {
     }
     parentCtx.msg = resTool.newMessage("assistant", "\u89C6\u9891\u7B56\u5212");
     return fullResponse;
+  }
+  async function requireFlowData(key, label) {
+    const flowData = await new Promise((resolve3) => resTool.socket.emit("getFlowData", { key }, (data) => resolve3(data)));
+    const value = flowData[key];
+    const isEmpty = typeof value === "string" ? !value.trim() : Array.isArray(value) ? value.length === 0 : value == null;
+    if (isEmpty) throw new Error(`${label}\u4E3A\u7A7A\uFF0C\u4EFB\u52A1\u672A\u5B8C\u6210\uFF0C\u4E0D\u80FD\u8FDB\u5165\u540E\u7EED\u5BA1\u6838`);
   }
   const promptInput = external_exports.object({
     prompt: external_exports.string().describe("\u4EA4\u7ED9\u5B50Agent\u7684\u4EFB\u52A1\u7B80\u7EA6\u63CF\u8FF0\uFF0C100\u5B57\u4EE5\u5185")
@@ -257795,7 +257818,8 @@ ${modelInfo}` },
 ${modelInfo}` },
           { role: "user", content: prompt + addPrompt }
         ],
-        tools: { activate_skill: productionSkills.tools.activate_skill }
+        tools: { activate_skill: productionSkills.tools.activate_skill },
+        afterRun: () => requireFlowData("storyboardTable", "\u5206\u955C\u8868")
       });
     }
   });
@@ -257810,7 +257834,8 @@ ${modelInfo}` },
         prompt,
         system: systemPrompt,
         name: "\u76D1\u5236",
-        memoryKey: "assistant:supervision"
+        memoryKey: "assistant:supervision",
+        beforeRun: () => /分镜表|阶段4/.test(prompt) ? requireFlowData("storyboardTable", "\u5206\u955C\u8868") : Promise.resolve()
       });
     }
   });

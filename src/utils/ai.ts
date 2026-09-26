@@ -8,11 +8,11 @@ import { normalizeStoryboardPrompt } from "@/lib/storyboardPrompt";
 import { compactStepMessages, stepInputBudget } from "@/utils/aiContext";
 
 const AGENT_MAX_STEPS: Record<string, number> = {
-  decisionAgent: 12,
+  decisionAgent: 6,
   directorPlanAgent: 12,
   storySkeletonAgent: 10,
   adaptationStrategyAgent: 10,
-  supervisionAgent: 8,
+  supervisionAgent: 3,
   scriptAgent: 8,
   deriveAssetsAgent: 6,
   generateAssetsAgent: 6,
@@ -50,11 +50,11 @@ const textPresets: Partial<Record<AiType, TextPreset>> = {
   "scriptAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
   "scriptAgent:storySkeletonAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
   "scriptAgent:adaptationStrategyAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
-  "productionAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
-  "productionAgent:directorPlanAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+  "productionAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 2048 },
+  "productionAgent:directorPlanAgent": { think: true, thinkLevel: 2, maxOutputTokens: 4096 },
   "scriptAgent:scriptAgent": { think: false, thinkLevel: 3, maxOutputTokens: 16384 },
   "scriptAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 8192 },
-  "productionAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 8192 },
+  "productionAgent:supervisionAgent": { think: false, thinkLevel: 0, maxOutputTokens: 2048 },
   "productionAgent:deriveAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
   "productionAgent:generateAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
   "productionAgent:storyboardGenAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },

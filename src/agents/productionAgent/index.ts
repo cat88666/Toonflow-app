@@ -4,7 +4,8 @@ import { tool, jsonSchema } from "ai";
 import u from "@/utils";
 import Memory from "@/utils/agent/memory";
 import { createSkillTools, parseFrontmatter, scanSkills, useSkill } from "@/utils/agent/skillsTools";
-import useTools from "@/agents/productionAgent/tools";
+import useTools, { type FlowData } from "@/agents/productionAgent/tools";
+import { readFlowDataField, readAgentSnapshot, writeStoryboardTable } from "@/lib/productionFlowData";
 import ResTool from "@/socket/resTool";
 import * as fs from "fs";
 import path from "path";
@@ -97,34 +98,63 @@ export async function runDecisionAI(ctx: AgentContext) {
 async function createSubAgent(parentCtx: AgentContext) {
   const { resTool, abortSignal } = parentCtx;
   const memory = new Memory("productionAgent", parentCtx.isolationKey);
-  async function runAgent({
-    key,
-    prompt,
-    system,
-    name,
-    memoryKey,
-    tools: extraTools,
-    messages,
-  }: {
+  type RunAgentOptions = {
     key: `${string}:${string}`;
     prompt: string;
     system: string;
     name: string;
     memoryKey: string;
     tools?: Record<string, any>;
+    flowDataTools?: string[];
     messages?: { role: "user" | "assistant" | "system"; content: string }[];
-  }) {
+    beforeRun?: () => Promise<void>;
+    afterRun?: () => Promise<void>;
+  };
+
+  let subAgentTail = Promise.resolve();
+  async function runAgent(options: RunAgentOptions) {
+    const previous = subAgentTail;
+    let release!: () => void;
+    subAgentTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      await options.beforeRun?.();
+      const result = await runAgentNow(options);
+      await options.afterRun?.();
+      return result;
+    } finally {
+      release();
+    }
+  }
+
+  async function runAgentNow({
+    key,
+    prompt,
+    system,
+    name,
+    memoryKey,
+    tools: extraTools,
+    flowDataTools,
+    messages,
+  }: RunAgentOptions) {
     parentCtx.msg.complete();
     const subMsg = resTool.newMessage("assistant", name);
 
-    const { fullStream } = await u.Ai.Text(key, parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
+    const streamResult = await u.Ai.Text(key, parentCtx.thinkConfig.think, parentCtx.thinkConfig.thinlLevel).stream({
       system,
       messages: messages ?? [{ role: "user", content: prompt }],
       abortSignal,
-      tools: { ...extraTools, ...useTools({ resTool, msg: subMsg }) },
+      tools: { ...extraTools, ...useTools({ resTool, toolsNames: flowDataTools, msg: subMsg }) },
     });
 
-    const fullResponse = await consumeFullStream(fullStream, subMsg);
+    const fullResponse = await consumeFullStream(streamResult.fullStream, subMsg);
+
+    const finishReason = await streamResult.finishReason;
+    if (finishReason === "length") {
+      console.warn(`[productionAgent] sub-agent ${name} (${key}) 被截断: finishReason=length`);
+    }
 
     if (fullResponse.trim()) {
       await memory.add(memoryKey, removeAllXmlTags(fullResponse), {
@@ -135,6 +165,13 @@ async function createSubAgent(parentCtx: AgentContext) {
 
     parentCtx.msg = resTool.newMessage("assistant", "视频策划");
     return fullResponse;
+  }
+
+  async function requireFlowData(key: keyof FlowData, label: string) {
+    const { projectId, scriptId: episodesId } = resTool.data;
+    const value = await readFlowDataField(projectId, episodesId, key);
+    const isEmpty = typeof value === "string" ? !value.trim() : Array.isArray(value) ? value.length === 0 : value == null;
+    if (isEmpty) throw new Error(`${label}为空，任务未完成，不能进入后续审核`);
   }
 
   const promptInput = z
@@ -329,18 +366,34 @@ async function createSubAgent(parentCtx: AgentContext) {
 
       const addPrompt = "\n你必须使用如下XML格式写入工作区：\n```\n<storyboardTable>内容</storyboardTable>\n```";
 
-      return runAgent({
+      // A2: 注入上下文快照，让 agent 不需要调用 get_flowData
+      const { projectId, scriptId: episodesId } = resTool.data;
+      const snapshot = await readAgentSnapshot(projectId, episodesId);
+      const contextMsg = `## 当前工作区快照\n剧本：\n${snapshot.script}\n\n拍摄计划：\n${snapshot.scriptPlan}\n\n资产列表：\n${JSON.stringify(snapshot.assets, null, 2)}`;
+
+      const result = await runAgent({
         key: "productionAgent:storyboardTableAgent",
         prompt,
         system: systemPrompt + addPrompt,
         name: "执行导演",
         memoryKey: "assistant:execution",
         messages: [
-          { role: "assistant", content: productionSkills.prompt + `\n${modelInfo}` },
+          { role: "assistant", content: productionSkills.prompt + `\n${modelInfo}\n\n${contextMsg}` },
           { role: "user", content: prompt + addPrompt },
         ],
         tools: { activate_skill: productionSkills.tools.activate_skill },
+        flowDataTools: [],
       });
+
+      // A2: 从响应中提取 <storyboardTable> 并直接写入 DB
+      const match = result.match(/<storyboardTable>([\s\S]*?)<\/storyboardTable>/);
+      if (match?.[1]?.trim()) {
+        await writeStoryboardTable(projectId, episodesId, match[1].trim());
+      } else {
+        await requireFlowData("storyboardTable", "分镜表");
+      }
+
+      return result;
     },
   });
 
@@ -350,12 +403,24 @@ async function createSubAgent(parentCtx: AgentContext) {
     execute: async ({ prompt }) => {
       const skill = path.join(u.getPath("skills"), "production_agent_supervision.md");
       const systemPrompt = await fs.promises.readFile(skill, "utf-8");
+
+      // A2: 注入上下文快照
+      const { projectId, scriptId: episodesId } = resTool.data;
+      const snapshot = await readAgentSnapshot(projectId, episodesId);
+      const contextMsg = `## 当前工作区快照\n剧本：\n${snapshot.script}\n\n拍摄计划：\n${snapshot.scriptPlan}\n\n资产列表：\n${JSON.stringify(snapshot.assets, null, 2)}\n\n分镜表：\n${snapshot.storyboardTable}`;
+
       return runAgent({
         key: "productionAgent:supervisionAgent",
         prompt,
         system: systemPrompt,
         name: "监制",
         memoryKey: "assistant:supervision",
+        messages: [
+          { role: "assistant", content: contextMsg },
+          { role: "user", content: prompt },
+        ],
+        flowDataTools: ["get_flowData"],
+        beforeRun: () => (/分镜表|阶段4/.test(prompt) ? requireFlowData("storyboardTable", "分镜表") : Promise.resolve()),
       });
     },
   });
