@@ -6,6 +6,21 @@ import sharp from "sharp";
 import u from "@/utils";
 import { normalizeStoryboardPrompt } from "@/lib/storyboardPrompt";
 
+const AGENT_MAX_STEPS: Record<string, number> = {
+  decisionAgent: 12,
+  directorPlanAgent: 12,
+  storySkeletonAgent: 10,
+  adaptationStrategyAgent: 10,
+  supervisionAgent: 8,
+  scriptAgent: 8,
+  deriveAssetsAgent: 6,
+  generateAssetsAgent: 6,
+  storyboardGenAgent: 6,
+  storyboardPanelAgent: 6,
+  storyboardTableAgent: 6,
+};
+const DEFAULT_MAX_STEPS = 6;
+
 type AiType =
   | "scriptAgent"
   | "productionAgent"
@@ -31,20 +46,20 @@ type TextPreset = {
 };
 
 const textPresets: Partial<Record<AiType, TextPreset>> = {
-  "scriptAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-  "scriptAgent:storySkeletonAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-  "scriptAgent:adaptationStrategyAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-  "productionAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-  "productionAgent:directorPlanAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-  "scriptAgent:scriptAgent": { think: false, thinkLevel: 3, maxOutputTokens: 32768 },
-  "scriptAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 16384 },
-  "productionAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 16384 },
-  "productionAgent:deriveAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-  "productionAgent:generateAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-  "productionAgent:storyboardGenAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-  "productionAgent:storyboardPanelAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-  "productionAgent:storyboardTableAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-  universalAi: { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
+  "scriptAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+  "scriptAgent:storySkeletonAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+  "scriptAgent:adaptationStrategyAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+  "productionAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+  "productionAgent:directorPlanAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+  "scriptAgent:scriptAgent": { think: false, thinkLevel: 3, maxOutputTokens: 16384 },
+  "scriptAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 8192 },
+  "productionAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 8192 },
+  "productionAgent:deriveAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+  "productionAgent:generateAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+  "productionAgent:storyboardGenAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+  "productionAgent:storyboardPanelAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+  "productionAgent:storyboardTableAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+  universalAi: { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
 };
 
 type FnName = "textRequest" | "imageRequest" | "videoRequest" | "ttsRequest";
@@ -119,7 +134,7 @@ async function resolveAgentModelConfig(value: AiType) {
     modelName: `${fallback.vendorId}:${fallback.model.modelName}`,
     vendorId: fallback.vendorId,
   };
-  await u.db("o_agentDeploy").where("id", config.id).update(repaired);
+  console.warn(`[ai] 配置模型不可用，临时使用 fallback: ${repaired.modelName}（不回写数据库）`);
   return { ...config, ...repaired };
 }
 
@@ -215,7 +230,7 @@ class AiText {
     const switchAiDevTool = await u.db("o_setting").where("key", "switchAiDevTool").first();
     const modelName = await resolveModelName(this.AiType);
     const sdkFn = await getVendorTemplateFn("textRequest", modelName);
-    const baseModel = await sdkFn(this.think ?? this.preset?.think, this.thinkLevel ?? this.preset?.thinkLevel ?? 0);
+    const baseModel = await sdkFn(this.preset?.think ?? this.think, this.preset?.thinkLevel ?? this.thinkLevel ?? 0);
     const mws = [
       ...(switchAiDevTool?.value === "1" ? [devToolsMiddleware()] : []),
       ...(middleware ? (Array.isArray(middleware) ? middleware : [middleware]) : []),
@@ -225,25 +240,37 @@ class AiText {
   async invoke(input: Omit<Parameters<typeof generateText>[0], "model">) {
     const config = await getModelConfig(this.AiType);
     const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config?.maxOutputTokens);
+    const inputEstimate = Math.ceil(JSON.stringify({ prompt: input.prompt, system: input.system, messages: input.messages, tools: input.tools }).length / 4);
+    const ctxLimit = 63000;
+    const effectiveMaxOutput = Math.min(maxOutputTokens, ctxLimit - inputEstimate);
+    if (effectiveMaxOutput < 1024) {
+      throw new Error(`输入过长(~${inputEstimate} tokens)，剩余空间不足以生成有效输出`);
+    }
 
     return generateText({
-      ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
+      ...(input.tools && { stopWhen: stepCountIs(AGENT_MAX_STEPS[this.AiType.split(":")[1] ?? ""] ?? DEFAULT_MAX_STEPS) }),
       ...input,
       model: await this.resolveModel(),
       ...(config?.temperature && { temperature: config.temperature }),
-      maxOutputTokens,
+      maxOutputTokens: effectiveMaxOutput,
     } as Parameters<typeof generateText>[0]);
   }
   async stream(input: Omit<Parameters<typeof streamText>[0], "model">) {
     const config = await getModelConfig(this.AiType);
     const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config?.maxOutputTokens);
+    const inputEstimate = Math.ceil(JSON.stringify({ prompt: input.prompt, system: input.system, messages: input.messages, tools: input.tools }).length / 4);
+    const ctxLimit = 63000;
+    const effectiveMaxOutput = Math.min(maxOutputTokens, ctxLimit - inputEstimate);
+    if (effectiveMaxOutput < 1024) {
+      throw new Error(`输入过长(~${inputEstimate} tokens)，剩余空间不足以生成有效输出`);
+    }
 
     return streamText({
-      ...(input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) }),
+      ...(input.tools && { stopWhen: stepCountIs(AGENT_MAX_STEPS[this.AiType.split(":")[1] ?? ""] ?? DEFAULT_MAX_STEPS) }),
       ...input,
       model: await this.resolveModel(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" })),
       ...(config?.temperature && { temperature: config.temperature }),
-      maxOutputTokens,
+      maxOutputTokens: effectiveMaxOutput,
     } as Parameters<typeof streamText>[0]);
   }
 }

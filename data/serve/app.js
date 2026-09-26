@@ -236850,7 +236850,7 @@ async function resolveAgentModelConfig(value) {
     modelName: `${fallback.vendorId}:${fallback.model.modelName}`,
     vendorId: fallback.vendorId
   };
-  await utils_default.db("o_agentDeploy").where("id", config3.id).update(repaired);
+  console.warn(`[ai] \u914D\u7F6E\u6A21\u578B\u4E0D\u53EF\u7528\uFF0C\u4E34\u65F6\u4F7F\u7528 fallback: ${repaired.modelName}\uFF08\u4E0D\u56DE\u5199\u6570\u636E\u5E93\uFF09`);
   return { ...config3, ...repaired };
 }
 async function resolveModelName(value) {
@@ -236954,7 +236954,7 @@ async function validateImageResult(result, promptValue) {
   if (recentImageResults.size > 100) recentImageResults.delete(recentImageResults.keys().next().value);
   return buffer;
 }
-var import_node_crypto4, import_sharp2, textPresets, AiTypeValues, DEFAULT_MAX_OUTPUT_TOKENS, CONTROL_AGENT_MAX_OUTPUT_TOKENS, AiText, recentImageResults, AiImage, AiVideo, AiAudio, ai_default;
+var import_node_crypto4, import_sharp2, AGENT_MAX_STEPS, DEFAULT_MAX_STEPS, textPresets, AiTypeValues, DEFAULT_MAX_OUTPUT_TOKENS, CONTROL_AGENT_MAX_OUTPUT_TOKENS, AiText, recentImageResults, AiImage, AiVideo, AiAudio, ai_default;
 var init_ai = __esm({
   "src/utils/ai.ts"() {
     "use strict";
@@ -236965,21 +236965,35 @@ var init_ai = __esm({
     import_sharp2 = __toESM(require("sharp"));
     init_utils3();
     init_storyboardPrompt();
+    AGENT_MAX_STEPS = {
+      decisionAgent: 12,
+      directorPlanAgent: 12,
+      storySkeletonAgent: 10,
+      adaptationStrategyAgent: 10,
+      supervisionAgent: 8,
+      scriptAgent: 8,
+      deriveAssetsAgent: 6,
+      generateAssetsAgent: 6,
+      storyboardGenAgent: 6,
+      storyboardPanelAgent: 6,
+      storyboardTableAgent: 6
+    };
+    DEFAULT_MAX_STEPS = 6;
     textPresets = {
-      "scriptAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-      "scriptAgent:storySkeletonAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-      "scriptAgent:adaptationStrategyAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-      "productionAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-      "productionAgent:directorPlanAgent": { think: true, thinkLevel: 2, maxOutputTokens: 24576 },
-      "scriptAgent:scriptAgent": { think: false, thinkLevel: 3, maxOutputTokens: 32768 },
-      "scriptAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 16384 },
-      "productionAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 16384 },
-      "productionAgent:deriveAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-      "productionAgent:generateAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-      "productionAgent:storyboardGenAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-      "productionAgent:storyboardPanelAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-      "productionAgent:storyboardTableAgent": { think: false, thinkLevel: 0, maxOutputTokens: 12288 },
-      universalAi: { think: false, thinkLevel: 0, maxOutputTokens: 12288 }
+      "scriptAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+      "scriptAgent:storySkeletonAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+      "scriptAgent:adaptationStrategyAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+      "productionAgent:decisionAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+      "productionAgent:directorPlanAgent": { think: true, thinkLevel: 2, maxOutputTokens: 12288 },
+      "scriptAgent:scriptAgent": { think: false, thinkLevel: 3, maxOutputTokens: 16384 },
+      "scriptAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 8192 },
+      "productionAgent:supervisionAgent": { think: true, thinkLevel: 1, maxOutputTokens: 8192 },
+      "productionAgent:deriveAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+      "productionAgent:generateAssetsAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+      "productionAgent:storyboardGenAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+      "productionAgent:storyboardPanelAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+      "productionAgent:storyboardTableAgent": { think: false, thinkLevel: 0, maxOutputTokens: 8192 },
+      universalAi: { think: false, thinkLevel: 0, maxOutputTokens: 8192 }
     };
     AiTypeValues = [
       "scriptAgent",
@@ -237016,7 +237030,7 @@ var init_ai = __esm({
         const switchAiDevTool = await utils_default.db("o_setting").where("key", "switchAiDevTool").first();
         const modelName = await resolveModelName(this.AiType);
         const sdkFn = await getVendorTemplateFn("textRequest", modelName);
-        const baseModel = await sdkFn(this.think ?? this.preset?.think, this.thinkLevel ?? this.preset?.thinkLevel ?? 0);
+        const baseModel = await sdkFn(this.preset?.think ?? this.think, this.preset?.thinkLevel ?? this.thinkLevel ?? 0);
         const mws = [
           ...switchAiDevTool?.value === "1" ? [devToolsMiddleware()] : [],
           ...middleware ? Array.isArray(middleware) ? middleware : [middleware] : []
@@ -237026,23 +237040,35 @@ var init_ai = __esm({
       async invoke(input) {
         const config3 = await getModelConfig(this.AiType);
         const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config3?.maxOutputTokens);
+        const inputEstimate = Math.ceil(JSON.stringify({ prompt: input.prompt, system: input.system, messages: input.messages, tools: input.tools }).length / 4);
+        const ctxLimit = 63e3;
+        const effectiveMaxOutput = Math.min(maxOutputTokens, ctxLimit - inputEstimate);
+        if (effectiveMaxOutput < 1024) {
+          throw new Error(`\u8F93\u5165\u8FC7\u957F(~${inputEstimate} tokens)\uFF0C\u5269\u4F59\u7A7A\u95F4\u4E0D\u8DB3\u4EE5\u751F\u6210\u6709\u6548\u8F93\u51FA`);
+        }
         return generateText({
-          ...input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) },
+          ...input.tools && { stopWhen: stepCountIs(AGENT_MAX_STEPS[this.AiType.split(":")[1] ?? ""] ?? DEFAULT_MAX_STEPS) },
           ...input,
           model: await this.resolveModel(),
           ...config3?.temperature && { temperature: config3.temperature },
-          maxOutputTokens
+          maxOutputTokens: effectiveMaxOutput
         });
       }
       async stream(input) {
         const config3 = await getModelConfig(this.AiType);
         const maxOutputTokens = resolveMaxOutputTokens(this.AiType, config3?.maxOutputTokens);
+        const inputEstimate = Math.ceil(JSON.stringify({ prompt: input.prompt, system: input.system, messages: input.messages, tools: input.tools }).length / 4);
+        const ctxLimit = 63e3;
+        const effectiveMaxOutput = Math.min(maxOutputTokens, ctxLimit - inputEstimate);
+        if (effectiveMaxOutput < 1024) {
+          throw new Error(`\u8F93\u5165\u8FC7\u957F(~${inputEstimate} tokens)\uFF0C\u5269\u4F59\u7A7A\u95F4\u4E0D\u8DB3\u4EE5\u751F\u6210\u6709\u6548\u8F93\u51FA`);
+        }
         return streamText({
-          ...input.tools && { stopWhen: stepCountIs(Object.keys(input.tools).length * 50) },
+          ...input.tools && { stopWhen: stepCountIs(AGENT_MAX_STEPS[this.AiType.split(":")[1] ?? ""] ?? DEFAULT_MAX_STEPS) },
           ...input,
           model: await this.resolveModel(extractReasoningMiddleware({ tagName: "reasoning_content", separator: "\n" })),
           ...config3?.temperature && { temperature: config3.temperature },
-          maxOutputTokens
+          maxOutputTokens: effectiveMaxOutput
         });
       }
     };
@@ -256747,7 +256773,8 @@ async function getEmbedding2(text2) {
   const embedding = await Promise.resolve().then(() => (init_embedding(), embedding_exports));
   return embedding.getEmbedding(text2);
 }
-var Memory = class {
+var Memory = class _Memory {
+  static summaryJobs = /* @__PURE__ */ new Set();
   agentType;
   isolationKey;
   constructor(agentType, isolationKey) {
@@ -256815,24 +256842,33 @@ ${list2}` }]
       createTime: options?.createTime ?? Date.now()
     });
     const unsummarized = await utils_default.db("memories").where({ isolationKey, type: "message", summarized: 0 }).orderBy("createTime", "asc");
-    if (unsummarized.length >= Number(messagesPerSummary)) {
+    if (unsummarized.length >= Number(messagesPerSummary) && !_Memory.summaryJobs.has(isolationKey)) {
       const batch = unsummarized.slice(0, Number(messagesPerSummary));
       const batchIds = batch.map((m) => m.id);
       const batchContents = batch.map((m) => m.content);
-      const summaryContent = await this.generateSummary(batchContents);
-      const summaryEmbedding = Number(embeddingEnabled) === 1 ? await getEmbedding2(summaryContent) : null;
-      const summaryId = v4_default();
-      await utils_default.db("memories").insert({
-        id: summaryId,
-        isolationKey,
-        type: "summary",
-        content: summaryContent,
-        embedding: summaryEmbedding ? JSON.stringify(summaryEmbedding) : null,
-        relatedMessageIds: JSON.stringify(batchIds),
-        summarized: 0,
-        createTime: Date.now()
-      });
-      await utils_default.db("memories").whereIn("id", batchIds).update({ summarized: 1 });
+      _Memory.summaryJobs.add(isolationKey);
+      void (async () => {
+        try {
+          const summaryContent = await this.generateSummary(batchContents);
+          const summaryEmbedding = Number(embeddingEnabled) === 1 ? await getEmbedding2(summaryContent) : null;
+          const summaryId = v4_default();
+          await utils_default.db("memories").insert({
+            id: summaryId,
+            isolationKey,
+            type: "summary",
+            content: summaryContent,
+            embedding: summaryEmbedding ? JSON.stringify(summaryEmbedding) : null,
+            relatedMessageIds: JSON.stringify(batchIds),
+            summarized: 0,
+            createTime: Date.now()
+          });
+          await utils_default.db("memories").whereIn("id", batchIds).update({ summarized: 1 });
+        } catch (error73) {
+          console.error("[memory] summary failed:", error73);
+        } finally {
+          _Memory.summaryJobs.delete(isolationKey);
+        }
+      })();
     }
   }
   async get(text2) {

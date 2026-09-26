@@ -47,6 +47,7 @@ async function getEmbedding(text: string): Promise<number[]> {
 }
 
 class Memory {
+  private static summaryJobs = new Set<string>();
   private agentType: string;
   private isolationKey: string;
 
@@ -121,28 +122,36 @@ class Memory {
     // 检查未总结消息数量
     const unsummarized = await u.db("memories").where({ isolationKey, type: "message", summarized: 0 }).orderBy("createTime", "asc");
 
-    if (unsummarized.length >= Number(messagesPerSummary)) {
+    if (unsummarized.length >= Number(messagesPerSummary) && !Memory.summaryJobs.has(isolationKey)) {
       const batch = unsummarized.slice(0, Number(messagesPerSummary));
       const batchIds = batch.map((m) => m.id);
       const batchContents = batch.map((m) => m.content);
 
-      const summaryContent = await this.generateSummary(batchContents);
-      const summaryEmbedding = Number(embeddingEnabled) === 1 ? await getEmbedding(summaryContent) : null;
-      const summaryId = uuidv4();
+      Memory.summaryJobs.add(isolationKey);
+      void (async () => {
+        try {
+          const summaryContent = await this.generateSummary(batchContents);
+          const summaryEmbedding = Number(embeddingEnabled) === 1 ? await getEmbedding(summaryContent) : null;
+          const summaryId = uuidv4();
 
-      await u.db("memories").insert({
-        id: summaryId,
-        isolationKey,
-        type: "summary",
-        content: summaryContent,
-        embedding: summaryEmbedding ? JSON.stringify(summaryEmbedding) : null,
-        relatedMessageIds: JSON.stringify(batchIds),
-        summarized: 0,
-        createTime: Date.now(),
-      } as any);
+          await u.db("memories").insert({
+            id: summaryId,
+            isolationKey,
+            type: "summary",
+            content: summaryContent,
+            embedding: summaryEmbedding ? JSON.stringify(summaryEmbedding) : null,
+            relatedMessageIds: JSON.stringify(batchIds),
+            summarized: 0,
+            createTime: Date.now(),
+          } as any);
 
-      // 标记已总结
-      await u.db("memories").whereIn("id", batchIds).update({ summarized: 1 });
+          await u.db("memories").whereIn("id", batchIds).update({ summarized: 1 });
+        } catch (error) {
+          console.error("[memory] summary failed:", error);
+        } finally {
+          Memory.summaryJobs.delete(isolationKey);
+        }
+      })();
     }
   }
 
